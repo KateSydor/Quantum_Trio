@@ -1,0 +1,74 @@
+erDiagram
+    User {
+        int user_id PK
+        string email
+        string password_hash
+        string name
+        string dietary_preferences
+        datetime created_at
+        datetime updated_at
+    }
+
+    Recipe {
+        int recipe_id PK
+        string title
+        string description
+        string instructions
+        string nutrition_json
+        int time_minutes
+        string difficulty
+        int author_user_id FK
+        datetime created_at
+    }
+
+    Ingredient {
+        int ingredient_id PK
+        string name
+        string category
+        string default_unit
+    }
+
+    RecipeIngredient {
+        int recipe_id FK
+        int ingredient_id FK
+        float quantity
+        string unit
+    }
+
+    GenerationHistory {
+        int gen_id PK
+        int user_id FK
+        string ingredients_input
+        string model_version
+        string openai_response
+        float cost_estimate
+        datetime created_at
+    }
+
+    Favorite {
+        int fav_id PK
+        int user_id FK
+        int recipe_id FK
+        datetime added_at
+    }
+
+    Note {
+        int note_id PK
+        int user_id FK
+        int recipe_id FK
+        string text
+        datetime created_at
+    }
+
+    %% --- Relationships ---
+    User ||--o{ GenerationHistory : "initiates"
+    GenerationHistory ||--o{ Recipe : "produces"
+
+    Recipe ||--o{ RecipeIngredient : "contains"
+    Ingredient ||--o{ RecipeIngredient : "used in"
+
+    User ||--o{ Favorite : "favorites"
+    Recipe ||--o{ Favorite : "is favorited by"
+
+    User ||--o{ Note : "writes"
+    Recipe ||--o{ Note : "has notes"

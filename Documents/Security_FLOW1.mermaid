@@ -1,0 +1,22 @@
+sequenceDiagram
+  actor User
+  participant Frontend
+  participant Backend
+  participant Auth as "Auth Service"
+  participant OpenAI
+  participant DB as "Postgres (encrypted)"
+  participant Audit as "AuditLog/Kafka"
+
+  User->>Frontend: Вводить інгредієнти + опції
+  Frontend->>Auth: Запит на валідацію сесії (JWT)
+  Auth-->>Frontend: JWT valid
+  Frontend->>Backend: POST /generate (JWT)
+  Backend->>Auth: Verify JWT
+  Auth-->>Backend: OK
+  Backend->>Backend: Санітизація input, build prompt
+  Backend->>OpenAI: HTTPS request (with KMS-stored API key)
+  OpenAI-->>Backend: Generated recipe
+  Backend->>DB: Save GenerationHistory (encrypt payload)
+  Backend->>Audit: Emit GENERATION_COMPLETED event
+  Backend-->>Frontend: 200 + recipe_id / rendered recipe
+  Frontend-->>User: Показує рецепт

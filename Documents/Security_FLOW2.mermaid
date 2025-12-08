@@ -1,0 +1,21 @@
+sequenceDiagram
+  actor Admin
+  participant AdminUI as "Admin Panel (React)"
+  participant Auth as "Auth Service"
+  participant Backend
+  participant DB as "Postgres (encrypted)"
+  participant Audit as "AuditLog"
+
+  Admin->>AdminUI: Login (MFA)
+  AdminUI->>Auth: Verify credentials + MFA
+  Auth-->>AdminUI: JWT (admin role)
+  Admin->>AdminUI: Submit recipe data (POST/PUT)
+  AdminUI->>Backend: POST /admin/recipes (JWT)
+  Backend->>Auth: Verify JWT + roles
+  Auth-->>Backend: role=admin OK
+  Backend->>Backend: Validate JSON schema, sanitise HTML
+  Backend->>DB: Insert/Update Recipe (with transactions)
+  DB-->>Backend: OK
+  Backend->>Audit: Log admin action (who/what/when)
+  Backend-->>AdminUI: 200 OK
+  AdminUI-->>Admin: Підтвердження
