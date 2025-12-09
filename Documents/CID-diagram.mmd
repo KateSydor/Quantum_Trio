@@ -1,0 +1,74 @@
+sequenceDiagram
+  title 5 Ключових Інтеракцій Сервісу
+
+  actor U as Користувач (Registered/Guest)
+  participant F as Frontend (React UI)
+  participant B as Backend (Spring Boot)
+  participant AI as OpenAI API
+  participant DB as Database (PostgreSQL)
+  participant Cache as Cache (Fallback)
+  
+  Note over U, B: **1. Генерація рецепту** (Реєстр. - необмежено, Гість - 1/24 год)
+  U->>F: 1. Ввести інгредієнти
+  F->>B: 2. API /api/generate
+  alt Успішна Генерація (Normal Flow)
+    B->>AI: 3. Виклик OpenAI API
+    AI-->>B: 4. Повернення згенерованого рецепту
+    B->>DB: 5. Асинхронно зберегти в історію
+    B-->>F: 6. Повернення структурованого рецепту
+    F-->>U: 7. Відображення рецепту
+  else Збій AI / Circuit Breaker OPEN
+    B->>Cache: 3b. Активація Fallback
+    Cache-->>B: 4b. Повернення релевантного кешованого рецепту
+    B-->>F: 6. Повернення кешованого рецепту
+    F-->>U: 7. Відображення з попередженням
+  end
+  
+  Note over U, DB: **2. Збереження в Улюблені** (Тільки зареєстровані)
+  U->>F: 1. Натиснути "Улюблене" (з JWT)
+  F->>B: 2. API /api/favorites (POST)
+  alt Валідний JWT
+    B->>DB: 3. Зберегти/Оновити user_id & recipe_id
+    DB-->>B: 4. Підтвердження успіху
+    B-->>F: 5. 200 OK
+  else Невалідний/Відсутній JWT
+    B-->>F: 3b. 401 Unauthorized
+    F-->>U: 4b. Перенаправити на логін
+  end
+
+  Note over U, DB: **3. Реєстрація користувача** (email або Google Account)
+  U->>F: 1. Ввести дані (email, password)
+  F->>B: 2. API /api/register
+  alt Успішна Реєстрація (Унікальний email)
+    B->>DB: 3. Створити нового користувача (хеш пароля)
+    DB-->>B: 4. Підтвердження (201 Created)
+    B-->>F: 5. Повернення успіху
+  else Email вже існує
+    DB-->>B: 3b. Помилка Duplicate Key
+    B-->>F: 4b. 409 Conflict
+  end
+  
+  Note over U, B: **4. Експорт у PDF** (Тільки зареєстровані)
+  U->>F: 1. Запит на PDF-експорт
+  F->>B: 2. API /api/export/pdf
+  participant PDFS as PDFExportService
+  alt Успішний Експорт
+    B->>PDFS: 3. Генерувати PDF
+    PDFS-->>B: 4. Повернення PDF-файлу
+    B-->>F: 5. Завантаження PDF (200 OK)
+  else Помилка Генерації (e.g., IOException)
+    PDFS-->>B: 3b. Помилка генерації
+    B-->>F: 4b. 500 Internal Server Error
+  end
+  
+  Note over U, DB: **5. Фільтрація Рецептів** (За дієт. обмеженнями, часом, складністю)
+  U->>F: 1. Застосувати фільтри
+  F->>B: 2. API /api/recipes?filters...
+  B->>DB: 3. Запит до DB з умовами
+  alt Успішне отримання даних
+    DB-->>B: 4. Повернення відфільтрованих рецептів
+    B-->>F: 5. 200 OK
+  else DB недоступна / Таймаут (R3.1)
+    B-->>F: 3b. 503 Service Unavailable
+    F-->>U: 4b. Повідомлення про помилку сервісу
+  end
