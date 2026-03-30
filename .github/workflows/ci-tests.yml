@@ -1,0 +1,202 @@
+# ═══════════════════════════════════════════════════════════
+# CI/CD Pipeline — RecipeAI Testing
+# Автоматизовані тести інтегровані в GitHub Actions
+# ═══════════════════════════════════════════════════════════
+
+name: RecipeAI — CI Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Nightly tests — кожен день о 2:00 UTC
+    - cron: '0 2 * * *'
+
+env:
+  NODE_VERSION: '20'
+  JAVA_VERSION: '17'
+
+jobs:
+  # ──────────────────────────────────
+  # 1. FRONTEND UNIT TESTS
+  # ──────────────────────────────────
+  frontend-unit-tests:
+    name: 🧪 Frontend Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm run test:unit -- --ci --coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-unit-coverage
+          path: coverage/
+          retention-days: 14
+
+  # ──────────────────────────────────
+  # 2. FRONTEND INTEGRATION TESTS
+  # ──────────────────────────────────
+  frontend-integration-tests:
+    name: 🔗 Frontend Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run integration tests
+        run: npm run test:integration -- --ci
+
+  # ──────────────────────────────────
+  # 3. API TESTS
+  # ──────────────────────────────────
+  api-tests:
+    name: 🌐 API Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run API tests
+        run: npm run test:api -- --ci
+
+  # ──────────────────────────────────
+  # 4. E2E / UI TESTS (Playwright)
+  # ──────────────────────────────────
+  e2e-tests:
+    name: 🎭 E2E UI Tests (Playwright)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'pull_request'
+    needs: [frontend-unit-tests, frontend-integration-tests]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+
+      - name: Run E2E tests
+        run: npm run test:e2e
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: test-results/playwright-report/
+          retention-days: 14
+
+  # ──────────────────────────────────
+  # 5. ALL TESTS COMBINED (Coverage)
+  # ──────────────────────────────────
+  full-test-suite:
+    name: ✅ Full Test Suite + Coverage
+    runs-on: ubuntu-latest
+    needs: [frontend-unit-tests, frontend-integration-tests, api-tests]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run all tests with coverage
+        run: npm run test:ci
+
+      - name: Upload full coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-coverage
+          path: coverage/
+          retention-days: 30
+
+      - name: Test Summary
+        if: always()
+        run: |
+          echo "## 🧪 Test Results Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Suite | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit Tests | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Integration Tests | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| API Tests | ✅ |" >> $GITHUB_STEP_SUMMARY
+
+  # ──────────────────────────────────
+  # 6. NIGHTLY PERFORMANCE TESTS
+  # ──────────────────────────────────
+  performance-tests:
+    name: ⚡ Performance Tests (k6)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D68
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Run performance tests
+        run: k6 run tests/performance/load-test.js
+        env:
+          BASE_URL: ${{ secrets.STAGING_URL }}
+
+      - name: Upload k6 results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: k6-results
+          path: k6-results/
+          retention-days: 14
+

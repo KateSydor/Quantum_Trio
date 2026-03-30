@@ -1,0 +1,36 @@
+{
+  "name": "recipeai-tests",
+  "version": "1.0.0",
+  "description": "RecipeAI — Automated Test Suite (Unit, Integration, API, E2E/UI)",
+  "private": true,
+  "scripts": {
+    "test": "jest --verbose",
+    "test:unit": "jest --testPathPattern=tests/frontend/unit --verbose",
+    "test:integration": "jest --testPathPattern=tests/frontend/integration --verbose",
+    "test:api": "jest --testPathPattern=tests/backend/api --verbose",
+    "test:e2e": "npx playwright test",
+    "test:e2e:headed": "npx playwright test --headed",
+    "test:coverage": "jest --coverage --verbose",
+    "test:ci": "jest --ci --coverage --verbose",
+    "test:all": "npm run test:ci && npm run test:e2e",
+    "lint": "eslint UI_prototype/src --ext .ts,.tsx"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.42.0",
+    "@testing-library/jest-dom": "^6.4.0",
+    "@testing-library/react": "^14.2.0",
+    "@testing-library/user-event": "^14.5.0",
+    "@types/jest": "^29.5.12",
+    "@types/react": "^18.2.55",
+    "@types/react-dom": "^18.2.19",
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "typescript": "^5.3.3",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "identity-obj-proxy": "^3.0.0",
+    "msw": "^2.2.0"
+  }
+}
+
