@@ -1,0 +1,24 @@
+# PostgreSQL for local development. From this directory:
+#   docker compose up -d
+# Ensure .env has matching DB_HOST=localhost, DB_PORT, DB_USERNAME, DB_PASSWORD, DB_NAME
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: quantum_trio_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-quantum_trio}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - quantum_trio_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  quantum_trio_pgdata:
