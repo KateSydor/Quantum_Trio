@@ -285,7 +285,7 @@ jobs:
   e2e-tests:
     name: 🎭 E2E Tests (Playwright)
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || github.event_name == 'pull_request'
+    if: always()
     needs: [frontend-unit-tests, frontend-integration-tests]
     steps:
       - name: Checkout code
@@ -320,7 +320,7 @@ jobs:
   performance-tests:
     name: ⚡ Performance Tests (k6)
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
+    if: always()
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
