@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.0](https://github.com/KateSydor/Quantum_Trio/compare/recipeai-tests-v1.1.0...recipeai-tests-v1.2.0) (2026-05-12)
+
+
+### ✨ Features
+
+* enhance release workflow to trigger blue-green production deploy ([4056d74](https://github.com/KateSydor/Quantum_Trio/commit/4056d74bc4db50db9b2e35565ad13920472863f1))
+
+
+### 🐛 Bug Fixes
+
+* improve error handling in Cloudflare KV reads in deploy.yml ([4ca0069](https://github.com/KateSydor/Quantum_Trio/commit/4ca00696ae431931ecb1755ee87a8e2a9989270d))
+
 ## [1.1.0](https://github.com/KateSydor/Quantum_Trio/compare/recipeai-tests-v1.0.0...recipeai-tests-v1.1.0) (2026-05-12)
 
 
