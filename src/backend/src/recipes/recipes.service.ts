@@ -1,7 +1,6 @@
 import {
   ConflictException,
   Injectable,
-  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -56,8 +55,6 @@ export type ReviewItemResponse = {
 
 @Injectable()
 export class RecipesService {
-  private readonly logger = new Logger(RecipesService.name);
-
   constructor(
     @InjectRepository(Recipe)
     private readonly recipeRepo: Repository<Recipe>,
@@ -151,18 +148,10 @@ export class RecipesService {
   }
 
   async generateAndSave(): Promise<RecipePageResponse> {
-    this.logger.log('Building mock recipe graph');
     const { recipe } = buildMockRecipeGraph();
-    this.logger.log(`Saving recipe title="${recipe.title}"`);
-    try {
-      const saved = await this.recipeRepo.save(recipe);
-      this.logger.log(`Recipe saved id=${saved.id}`);
-      const stats = await this.getReviewStats(saved.id);
-      return this.toResponse(saved, stats);
-    } catch (err) {
-      this.logger.error('Failed to save recipe', (err as Error).stack);
-      throw err;
-    }
+    const saved = await this.recipeRepo.save(recipe);
+    const stats = await this.getReviewStats(saved.id);
+    return this.toResponse(saved, stats);
   }
 
   async findById(id: string): Promise<RecipePageResponse> {
