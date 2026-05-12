@@ -2,7 +2,7 @@
  * Unit Tests — Home Page
  * Тести головної сторінки (HomePage)
  */
-import React from 'react';
+import React, { act } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import HomePage from '../../../UI_prototype/src/pages/Home';
@@ -71,7 +71,7 @@ describe('Home Page', () => {
     const user = userEvent.setup();
     renderHome();
     const saladChip = screen.getByText('🥗 Салати');
-    await user.click(saladChip);
+    await act(async () => { await user.click(saladChip); });
     expect(saladChip).toHaveClass('chip--active');
   });
 
@@ -108,8 +108,7 @@ describe('Home Page', () => {
     const user = userEvent.setup();
     renderHome();
     const saveButtons = screen.getAllByText('♡');
-    await user.click(saveButtons[0]);
-    // Should still be on Home page
+    await act(async () => { await user.click(saveButtons[0]); });
     expect(screen.getByText(/Що приготуємо/)).toBeInTheDocument();
   });
 });

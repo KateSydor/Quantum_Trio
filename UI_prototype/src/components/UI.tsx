@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { useNavigate, Page } from '../router';
 
 /* ─── FOOTER ─── */

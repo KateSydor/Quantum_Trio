@@ -1,0 +1,40 @@
+{
+  "compilerOptions": {
+    "module": "CommonJS",
+    "target": "ES2020",
+    "lib": ["ES2020"],
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "moduleResolution": "node",
+    "baseUrl": ".",
+    "paths": {
+      "@nestjs/*":         ["./src/backend/node_modules/@nestjs/*"],
+      "supertest":         ["./src/backend/node_modules/supertest"],
+      "passport":          ["./src/backend/node_modules/passport"],
+      "passport-jwt":      ["./src/backend/node_modules/passport-jwt"],
+      "bcrypt":            ["./src/backend/node_modules/bcrypt"],
+      "typeorm":           ["./src/backend/node_modules/typeorm"],
+      "rxjs":              ["./src/backend/node_modules/rxjs"],
+      "rxjs/*":            ["./src/backend/node_modules/rxjs/*"],
+      "class-validator":   ["./src/backend/node_modules/class-validator"],
+      "class-transformer": ["./src/backend/node_modules/class-transformer"],
+      "reflect-metadata":  ["./src/backend/node_modules/reflect-metadata"]
+    },
+    "typeRoots": [
+      "./src/backend/node_modules/@types",
+      "./node_modules/@types"
+    ]
+  },
+  "include": [
+    "tests/backend/**/*.ts",
+    "src/backend/src/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "src/backend/node_modules"
+  ]
+}

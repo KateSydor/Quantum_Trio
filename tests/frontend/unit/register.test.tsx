@@ -2,7 +2,7 @@
  * Unit Tests — Register Page
  * Тести сторінки реєстрації (RegisterPage)
  */
-import React from 'react';
+import React, { act } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import RegisterPage from '../../../UI_prototype/src/pages/Register';
@@ -81,7 +81,7 @@ describe('Register Page', () => {
     renderRegister();
     const vegOption = screen.getByText('Вегетаріанство').closest('.diet-opt');
     expect(vegOption).not.toHaveClass('diet-opt--selected');
-    await user.click(vegOption!);
+    await act(async () => { await user.click(vegOption!); });
     expect(vegOption).toHaveClass('diet-opt--selected');
   });
 

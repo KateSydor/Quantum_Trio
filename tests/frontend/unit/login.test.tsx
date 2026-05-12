@@ -2,7 +2,7 @@
  * Unit Tests — Login Page
  * Тести сторінки входу (LoginPage)
  */
-import React from 'react';
+import React, { act } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import LoginPage from '../../../UI_prototype/src/pages/Login';
@@ -44,7 +44,7 @@ describe('Login Page', () => {
     renderLogin();
     const toggleBtn = screen.getByText('👁️');
     expect(toggleBtn).toBeInTheDocument();
-    await user.click(toggleBtn);
+    await act(async () => { await user.click(toggleBtn); });
     expect(screen.getByText('🙈')).toBeInTheDocument();
   });
 

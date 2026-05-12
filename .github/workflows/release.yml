@@ -1,0 +1,47 @@
+# ═══════════════════════════════════════════════════════════
+# Semantic Versioning — Release
+#
+# Автоматично визначає версію на основі Conventional Commits:
+#   feat: ...        → minor bump  (1.0.0 → 1.1.0)
+#   fix: ...         → patch bump  (1.0.0 → 1.0.1)
+#   feat!: ...       → major bump  (1.0.0 → 2.0.0)
+#   BREAKING CHANGE: → major bump
+#
+# Як це працює:
+#   1. При push до main — release аналізує commits
+#   2. Якщо є нові feat/fix — відкриває Release PR з:
+#      - оновленою версією у package.json
+#      - згенерованим CHANGELOG.md
+#   3. При merge Release PR — створює GitHub Release + тег v1.x.x
+# ═══════════════════════════════════════════════════════════
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    name: 🚀 Semantic Versioning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # Після успішного release — виводимо інформацію про нову версію
+      - name: Release Summary
+        if: ${{ steps.release.outputs.release_created }}
+        run: |
+          echo "## 🎉 New Release Created" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** \`${{ steps.release.outputs.tag_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Release URL:** ${{ steps.release.outputs.html_url }}" >> $GITHUB_STEP_SUMMARY

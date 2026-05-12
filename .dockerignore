@@ -1,0 +1,12 @@
+node_modules
+src/backend/node_modules
+src/backend/dist
+coverage
+test-results
+playwright-report
+.git
+.github
+docs
+*.md
+junit.xml
+*.junit.xml

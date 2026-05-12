@@ -49,7 +49,7 @@ describe('Router Module', () => {
         <TestNavigator />
       </RouterProvider>
     );
-    await user.click(screen.getByText('Go Login'));
+    await act(async () => { await user.click(screen.getByText('Go Login')); });
     expect(screen.getByTestId('current-page')).toHaveTextContent('login');
   });
 
@@ -61,7 +61,7 @@ describe('Router Module', () => {
         <TestNavigator />
       </RouterProvider>
     );
-    await user.click(screen.getByText('Go Home'));
+    await act(async () => { await user.click(screen.getByText('Go Home')); });
     expect(screen.getByTestId('current-page')).toHaveTextContent('home');
   });
 
@@ -73,7 +73,7 @@ describe('Router Module', () => {
         <TestNavigator />
       </RouterProvider>
     );
-    await user.click(screen.getByText('Go Register'));
+    await act(async () => { await user.click(screen.getByText('Go Register')); });
     expect(screen.getByTestId('current-page')).toHaveTextContent('register');
   });
 
@@ -85,7 +85,7 @@ describe('Router Module', () => {
         <TestNavigator />
       </RouterProvider>
     );
-    await user.click(screen.getByText('Go Generate'));
+    await act(async () => { await user.click(screen.getByText('Go Generate')); });
     expect(screen.getByTestId('current-page')).toHaveTextContent('generate');
   });
 
@@ -97,7 +97,7 @@ describe('Router Module', () => {
         <TestNavigator />
       </RouterProvider>
     );
-    await user.click(screen.getByText('Go Recipe'));
+    await act(async () => { await user.click(screen.getByText('Go Recipe')); });
     expect(screen.getByTestId('current-page')).toHaveTextContent('recipe');
   });
 
@@ -109,7 +109,7 @@ describe('Router Module', () => {
         <TestNavigator />
       </RouterProvider>
     );
-    await user.click(screen.getByText('Go Profile'));
+    await act(async () => { await user.click(screen.getByText('Go Profile')); });
     expect(screen.getByTestId('current-page')).toHaveTextContent('profile');
   });
 
@@ -121,7 +121,7 @@ describe('Router Module', () => {
         <TestNavigator />
       </RouterProvider>
     );
-    await user.click(screen.getByText('Go Home'));
+    await act(async () => { await user.click(screen.getByText('Go Home')); });
     expect(window.scrollTo).toHaveBeenCalledWith(0, 0);
   });
 
@@ -133,11 +133,11 @@ describe('Router Module', () => {
         <TestNavigator />
       </RouterProvider>
     );
-    await user.click(screen.getByText('Go Login'));
+    await act(async () => { await user.click(screen.getByText('Go Login')); });
     expect(screen.getByTestId('current-page')).toHaveTextContent('login');
-    await user.click(screen.getByText('Go Home'));
+    await act(async () => { await user.click(screen.getByText('Go Home')); });
     expect(screen.getByTestId('current-page')).toHaveTextContent('home');
-    await user.click(screen.getByText('Go Landing'));
+    await act(async () => { await user.click(screen.getByText('Go Landing')); });
     expect(screen.getByTestId('current-page')).toHaveTextContent('landing');
   });
 
@@ -149,7 +149,7 @@ describe('Router Module', () => {
         <TestNavigator />
       </RouterProvider>
     );
-    await user.click(screen.getByText('Go Loading'));
+    await act(async () => { await user.click(screen.getByText('Go Loading')); });
     expect(screen.getByTestId('current-page')).toHaveTextContent('loading');
   });
 });

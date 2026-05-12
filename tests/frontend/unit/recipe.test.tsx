@@ -2,7 +2,7 @@
  * Unit Tests — Recipe Page
  * Тести сторінки рецепту (RecipePage)
  */
-import React from 'react';
+import React, { act } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import RecipePage from '../../../UI_prototype/src/pages/Recipe';
@@ -62,7 +62,7 @@ describe('Recipe Page', () => {
   test('switching to steps tab shows cooking steps', async () => {
     const user = userEvent.setup();
     renderRecipe();
-    await user.click(screen.getByText('👨‍🍳 Приготування'));
+    await act(async () => { await user.click(screen.getByText('👨‍🍳 Приготування')); });
     expect(screen.getByText(/Розігрій оливкову олію/)).toBeInTheDocument();
     expect(screen.getByText(/Додай нарізану цибулю/)).toBeInTheDocument();
   });
@@ -71,7 +71,7 @@ describe('Recipe Page', () => {
   test('switching to nutrition tab shows КБЖУ', async () => {
     const user = userEvent.setup();
     renderRecipe();
-    await user.click(screen.getByText('📊 Поживність'));
+    await act(async () => { await user.click(screen.getByText('📊 Поживність')); });
     expect(screen.getAllByText('320').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Калорії').length).toBeGreaterThan(0);
   });
@@ -80,7 +80,7 @@ describe('Recipe Page', () => {
   test('switching to reviews tab shows empty state', async () => {
     const user = userEvent.setup();
     renderRecipe();
-    await user.click(screen.getByText('💬 Відгуки (12)'));
+    await act(async () => { await user.click(screen.getByText('💬 Відгуки (12)')); });
     expect(screen.getByText(/Відгуків поки немає/)).toBeInTheDocument();
   });
 
@@ -89,7 +89,7 @@ describe('Recipe Page', () => {
     const user = userEvent.setup();
     renderRecipe();
     const saveBtn = screen.getByText('♡ Зберегти рецепт');
-    await user.click(saveBtn);
+    await act(async () => { await user.click(saveBtn); });
     expect(screen.getByText('✅ Збережено')).toBeInTheDocument();
   });
 

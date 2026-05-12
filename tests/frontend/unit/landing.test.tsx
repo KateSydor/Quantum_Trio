@@ -32,7 +32,7 @@ describe('Landing Page', () => {
   // UT-L-003
   test('renders CTA buttons', () => {
     renderLanding();
-    expect(screen.getByText('Розпочати →')).toBeInTheDocument();
+    expect(screen.getAllByText('Розпочати →').length).toBeGreaterThan(0);
     expect(screen.getByText('▶ Демо')).toBeInTheDocument();
   });
 
