@@ -1,6 +1,6 @@
 {
   "name": "recipeai-tests",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "RecipeAI — Automated Test Suite (Unit, Integration, API, E2E/UI)",
   "private": true,
   "scripts": {
