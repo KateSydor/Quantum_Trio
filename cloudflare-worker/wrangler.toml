@@ -1,0 +1,8 @@
+name               = "recipeai-router"
+main               = "index.js"
+compatibility_date = "2024-09-23"
+
+[vars]
+ACTIVE_SLOT = "blue"
+BLUE_URL    = "https://recipeai-blue.onrender.com"
+GREEN_URL   = "https://recipeai-green.onrender.com"
