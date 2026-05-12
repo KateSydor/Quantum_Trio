@@ -9,22 +9,21 @@
 #
 # Blue-green mechanics:
 #   • Two Render services: recipeai-blue + recipeai-green
-#   • Cloudflare Worker (cloudflare-worker/) proxies production traffic.
-#     Worker URL: https://recipeai-router.<subdomain>.workers.dev (free, no domain needed)
-#   • Traffic switch = write new ACTIVE_SLOT value to Cloudflare KV (instant)
-#   • Active slot is determined by reading ACTIVE_SLOT from KV
+#   • Cloudflare Worker proxies traffic; switch = write ACTIVE_SLOT to KV
+#   • Active slot is determined by reading ACTIVE_SLOT from Cloudflare KV
+#   • On KV read failure: defaults to "blue" and continues
 #   • On post-switch smoke test failure: KV is reverted automatically
 #
-# Required secrets (Settings → Secrets and variables → Secrets):
+# Required secrets:
 #   RENDER_API_KEY                Render API token
 #   RENDER_STAGING_SERVICE_ID     Render service ID — staging
-#   RENDER_BLUE_SERVICE_ID        Render service ID — blue production slot
-#   RENDER_GREEN_SERVICE_ID       Render service ID — green production slot
+#   RENDER_BLUE_SERVICE_ID        Render service ID — blue slot
+#   RENDER_GREEN_SERVICE_ID       Render service ID — green slot
 #   CLOUDFLARE_API_TOKEN          Cloudflare API token (Workers KV Storage:Edit)
-#   CLOUDFLARE_ACCOUNT_ID         Cloudflare account ID (dashboard right sidebar)
-#   CLOUDFLARE_KV_NAMESPACE_ID    KV namespace ID (from wrangler kv namespace create)
+#   CLOUDFLARE_ACCOUNT_ID         Cloudflare account ID
+#   CLOUDFLARE_KV_NAMESPACE_ID    KV namespace ID for BLUE_GREEN_SLOTS
 #
-# Required variables (Settings → Secrets and variables → Variables):
+# Required variables:
 #   PRODUCTION_DOMAIN             Worker URL, e.g. recipeai-router.YOUR.workers.dev
 # ═══════════════════════════════════════════════════════════
 
@@ -61,51 +60,85 @@ jobs:
       name: staging
       url: ${{ steps.get-url.outputs.url }}
     steps:
+      - name: "🔍 Secrets check"
+        run: |
+          echo "=== SECRETS LENGTH CHECK ==="
+          echo "RENDER_API_KEY         : ${#RENDER_API_KEY_VAL} chars"
+          echo "RENDER_STAGING_SERVICE_ID: ${#STAGING_ID_VAL} chars"
+          [ -z "$RENDER_API_KEY_VAL" ]  && echo "❌ RENDER_API_KEY is EMPTY"           || echo "✓ RENDER_API_KEY set"
+          [ -z "$STAGING_ID_VAL" ]      && echo "❌ RENDER_STAGING_SERVICE_ID is EMPTY" || echo "✓ RENDER_STAGING_SERVICE_ID set"
+        env:
+          RENDER_API_KEY_VAL: ${{ secrets.RENDER_API_KEY }}
+          STAGING_ID_VAL:     ${{ secrets.RENDER_STAGING_SERVICE_ID }}
+
       - name: Trigger Render staging deploy
         id: trigger
         run: |
-          RESPONSE=$(curl -sf -X POST \
+          echo "=== TRIGGERING STAGING DEPLOY ==="
+          echo "URL: ${{ env.RENDER_API }}/services/${{ secrets.RENDER_STAGING_SERVICE_ID }}/deploys"
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
             "${{ env.RENDER_API }}/services/${{ secrets.RENDER_STAGING_SERVICE_ID }}/deploys" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d '{"clearCache": "do_not_clear"}')
-          echo "deploy_id=$(echo "$RESPONSE" | jq -r '.id')" >> "$GITHUB_OUTPUT"
+          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
+          BODY=$(echo "$RESPONSE" | grep -v "HTTP_STATUS")
+          echo "Response status : $HTTP_STATUS"
+          echo "Response body   : $BODY"
+          if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "201" ]; then
+            echo "❌ Render API returned HTTP $HTTP_STATUS"
+            exit 1
+          fi
+          DEPLOY_ID=$(echo "$BODY" | jq -r '.id')
+          echo "deploy_id=$DEPLOY_ID" >> "$GITHUB_OUTPUT"
+          echo "✓ Deploy triggered: $DEPLOY_ID"
 
       - name: Wait for staging deploy
         timeout-minutes: 10
         run: |
+          echo "=== POLLING STAGING DEPLOY: ${{ steps.trigger.outputs.deploy_id }} ==="
           for i in $(seq 1 40); do
-            STATUS=$(curl -sf \
+            RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
               "${{ env.RENDER_API }}/services/${{ secrets.RENDER_STAGING_SERVICE_ID }}/deploys/${{ steps.trigger.outputs.deploy_id }}" \
-              -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" | jq -r '.status')
-            echo "[$i/40] $STATUS"
-            [ "$STATUS" = "live" ] && exit 0
-            [[ "$STATUS" =~ ^(deactivated|build_failed|update_failed)$ ]] && echo "Deploy failed: $STATUS" && exit 1
+              -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}")
+            HTTP_STATUS=$(echo "$RESP" | grep "HTTP_STATUS" | cut -d: -f2)
+            STATUS=$(echo "$RESP" | grep -v "HTTP_STATUS" | jq -r '.status')
+            echo "[$i/40] HTTP=$HTTP_STATUS  status=$STATUS"
+            [ "$STATUS" = "live" ] && echo "✓ Deploy is live" && exit 0
+            [[ "$STATUS" =~ ^(deactivated|build_failed|update_failed)$ ]] && echo "❌ Deploy failed: $STATUS" && exit 1
             sleep 15
           done
-          echo "Timed out" && exit 1
+          echo "❌ Timed out after 10 minutes" && exit 1
 
       - name: Get staging URL
         id: get-url
         run: |
-          URL=$(curl -sf "${{ env.RENDER_API }}/services/${{ secrets.RENDER_STAGING_SERVICE_ID }}" \
-            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" | jq -r '.serviceDetails.url')
+          echo "=== FETCHING STAGING SERVICE URL ==="
+          RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
+            "${{ env.RENDER_API }}/services/${{ secrets.RENDER_STAGING_SERVICE_ID }}" \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}")
+          HTTP_STATUS=$(echo "$RESP" | grep "HTTP_STATUS" | cut -d: -f2)
+          BODY=$(echo "$RESP" | grep -v "HTTP_STATUS")
+          URL=$(echo "$BODY" | jq -r '.serviceDetails.url')
+          echo "HTTP=$HTTP_STATUS  URL=$URL"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
       - name: Smoke tests — staging
         run: |
-          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "${{ steps.get-url.outputs.url }}/health")
-          [ "$STATUS" != "200" ] && echo "Health check failed: HTTP $STATUS" && exit 1
+          echo "=== SMOKE TEST: ${{ steps.get-url.outputs.url }}/health ==="
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ steps.get-url.outputs.url }}/health")
+          echo "HTTP status: $STATUS"
+          [ "$STATUS" != "200" ] && echo "❌ Health check failed" && exit 1
           echo "✓ /health → 200"
 
       - name: Summary
-        if: success()
+        if: always()
         run: |
-          echo "## 🟦 Staging deployed" >> $GITHUB_STEP_SUMMARY
+          echo "## 🟦 Staging Deploy" >> $GITHUB_STEP_SUMMARY
           echo "**URL:** ${{ steps.get-url.outputs.url }}  **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
 
   # ──────────────────────────────────────────────────────────
-  # Step 1: read ACTIVE_SLOT from Cloudflare KV → know which slot is live
+  # Step 1: read ACTIVE_SLOT from Cloudflare KV
   # ──────────────────────────────────────────────────────────
   determine-slots:
     name: 🔵🟢 Determine Active / Inactive Slots
@@ -117,23 +150,49 @@ jobs:
       active_service_id:   ${{ steps.resolve.outputs.active_service_id }}
       inactive_service_id: ${{ steps.resolve.outputs.inactive_service_id }}
     steps:
+      - name: "🔍 Secrets check"
+        run: |
+          echo "=== SECRETS LENGTH CHECK ==="
+          echo "RENDER_API_KEY            : ${#RK} chars"
+          echo "RENDER_BLUE_SERVICE_ID    : ${#BLUE} chars"
+          echo "RENDER_GREEN_SERVICE_ID   : ${#GREEN} chars"
+          echo "CLOUDFLARE_API_TOKEN      : ${#CF_TOKEN} chars"
+          echo "CLOUDFLARE_ACCOUNT_ID     : ${#CF_ACCOUNT} chars"
+          echo "CLOUDFLARE_KV_NAMESPACE_ID: ${#CF_KV} chars"
+          [ -z "$RK" ]         && echo "❌ RENDER_API_KEY is EMPTY"              || echo "✓ RENDER_API_KEY"
+          [ -z "$BLUE" ]       && echo "❌ RENDER_BLUE_SERVICE_ID is EMPTY"      || echo "✓ RENDER_BLUE_SERVICE_ID"
+          [ -z "$GREEN" ]      && echo "❌ RENDER_GREEN_SERVICE_ID is EMPTY"     || echo "✓ RENDER_GREEN_SERVICE_ID"
+          [ -z "$CF_TOKEN" ]   && echo "❌ CLOUDFLARE_API_TOKEN is EMPTY"        || echo "✓ CLOUDFLARE_API_TOKEN"
+          [ -z "$CF_ACCOUNT" ] && echo "❌ CLOUDFLARE_ACCOUNT_ID is EMPTY"      || echo "✓ CLOUDFLARE_ACCOUNT_ID"
+          [ -z "$CF_KV" ]      && echo "❌ CLOUDFLARE_KV_NAMESPACE_ID is EMPTY" || echo "✓ CLOUDFLARE_KV_NAMESPACE_ID"
+        env:
+          RK:         ${{ secrets.RENDER_API_KEY }}
+          BLUE:       ${{ secrets.RENDER_BLUE_SERVICE_ID }}
+          GREEN:      ${{ secrets.RENDER_GREEN_SERVICE_ID }}
+          CF_TOKEN:   ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_KV:      ${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}
+
       - name: Read ACTIVE_SLOT from Cloudflare KV
         id: resolve
         run: |
-          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
-            "${{ env.CF_API }}/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}/values/ACTIVE_SLOT" \
+          echo "=== READING ACTIVE_SLOT FROM CLOUDFLARE KV ==="
+          KV_URL="${{ env.CF_API }}/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}/values/ACTIVE_SLOT"
+          echo "KV URL: $KV_URL"
+
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" "$KV_URL" \
             -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}")
 
           HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
           ACTIVE=$(echo "$RESPONSE" | grep -v "HTTP_STATUS")
-          echo "KV response status: $HTTP_STATUS"
-          echo "KV response body: $ACTIVE"
+          echo "KV response status : $HTTP_STATUS"
+          echo "KV response body   : $ACTIVE"
 
           if [ "$HTTP_STATUS" != "200" ] || [ -z "$ACTIVE" ] || [ "$ACTIVE" = "null" ]; then
-            echo "KV read failed (HTTP $HTTP_STATUS) — defaulting to blue"
+            echo "⚠️  KV read failed (HTTP $HTTP_STATUS) — defaulting to blue"
             ACTIVE="blue"
           fi
-          echo "KV ACTIVE_SLOT: $ACTIVE"
+          echo "Resolved ACTIVE_SLOT: $ACTIVE"
 
           if [ "$ACTIVE" = "green" ]; then
             INACTIVE="blue"
@@ -145,15 +204,23 @@ jobs:
             INACTIVE_ID="${{ secrets.RENDER_GREEN_SERVICE_ID }}"
           fi
 
+          echo "Active slot  : $ACTIVE  (service ID len: ${#ACTIVE_ID})"
+          echo "Inactive slot: $INACTIVE (service ID len: ${#INACTIVE_ID})"
+
+          if [ -z "$INACTIVE_ID" ]; then
+            echo "❌ ERROR: service ID for '$INACTIVE' slot is empty"
+            echo "   → Check that RENDER_BLUE_SERVICE_ID / RENDER_GREEN_SERVICE_ID are added as Secrets (not Variables)"
+            exit 1
+          fi
+
           echo "active_slot=$ACTIVE"              >> "$GITHUB_OUTPUT"
           echo "inactive_slot=$INACTIVE"          >> "$GITHUB_OUTPUT"
           echo "active_service_id=$ACTIVE_ID"     >> "$GITHUB_OUTPUT"
           echo "inactive_service_id=$INACTIVE_ID" >> "$GITHUB_OUTPUT"
-          echo "Active: $ACTIVE  →  Deploying to: $INACTIVE"
+          echo "✓ Slots resolved — deploying to: $INACTIVE"
 
   # ──────────────────────────────────────────────────────────
-  # Step 2: deploy new version to inactive slot.
-  # Worker still routes 100% of traffic to the active slot.
+  # Step 2: deploy new version to inactive slot
   # ──────────────────────────────────────────────────────────
   deploy-inactive-slot:
     name: 🚀 Deploy → ${{ needs.determine-slots.outputs.inactive_slot }} (inactive)
@@ -166,55 +233,88 @@ jobs:
       slot_url:  ${{ steps.get-url.outputs.url }}
       deploy_id: ${{ steps.trigger.outputs.deploy_id }}
     steps:
+      - name: "🔍 Received slot info"
+        run: |
+          echo "=== INPUTS FROM determine-slots ==="
+          echo "inactive_slot      : ${{ needs.determine-slots.outputs.inactive_slot }}"
+          echo "inactive_service_id: ${{ needs.determine-slots.outputs.inactive_service_id }}"
+          echo "active_slot        : ${{ needs.determine-slots.outputs.active_slot }}"
+
       - name: Trigger deploy on inactive slot
         id: trigger
         run: |
-          RESPONSE=$(curl -sf -X POST \
-            "${{ env.RENDER_API }}/services/${{ needs.determine-slots.outputs.inactive_service_id }}/deploys" \
+          SVC_ID="${{ needs.determine-slots.outputs.inactive_service_id }}"
+          echo "=== TRIGGERING DEPLOY ON ${{ needs.determine-slots.outputs.inactive_slot }} SLOT ==="
+          echo "Service ID : $SVC_ID"
+          echo "URL        : ${{ env.RENDER_API }}/services/$SVC_ID/deploys"
+
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
+            "${{ env.RENDER_API }}/services/$SVC_ID/deploys" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d '{"clearCache": "do_not_clear"}')
-          DEPLOY_ID=$(echo "$RESPONSE" | jq -r '.id')
+          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
+          BODY=$(echo "$RESPONSE" | grep -v "HTTP_STATUS")
+          echo "Response status: $HTTP_STATUS"
+          echo "Response body  : $BODY"
+
+          if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "201" ]; then
+            echo "❌ Render API returned HTTP $HTTP_STATUS"
+            exit 1
+          fi
+          DEPLOY_ID=$(echo "$BODY" | jq -r '.id')
           echo "deploy_id=$DEPLOY_ID" >> "$GITHUB_OUTPUT"
-          echo "Triggered on ${{ needs.determine-slots.outputs.inactive_slot }}: $DEPLOY_ID"
+          echo "✓ Deploy triggered: $DEPLOY_ID"
 
       - name: Wait for deploy
         timeout-minutes: 10
         run: |
+          echo "=== POLLING DEPLOY: ${{ steps.trigger.outputs.deploy_id }} ==="
           for i in $(seq 1 40); do
-            STATUS=$(curl -sf \
+            RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
               "${{ env.RENDER_API }}/services/${{ needs.determine-slots.outputs.inactive_service_id }}/deploys/${{ steps.trigger.outputs.deploy_id }}" \
-              -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" | jq -r '.status')
-            echo "[$i/40] ${{ needs.determine-slots.outputs.inactive_slot }}: $STATUS"
-            [ "$STATUS" = "live" ] && exit 0
-            [[ "$STATUS" =~ ^(deactivated|build_failed|update_failed)$ ]] && echo "Deploy failed: $STATUS" && exit 1
+              -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}")
+            HTTP_STATUS=$(echo "$RESP" | grep "HTTP_STATUS" | cut -d: -f2)
+            STATUS=$(echo "$RESP" | grep -v "HTTP_STATUS" | jq -r '.status')
+            echo "[$i/40] HTTP=$HTTP_STATUS  deploy_status=$STATUS"
+            [ "$STATUS" = "live" ] && echo "✓ Deploy is live" && exit 0
+            [[ "$STATUS" =~ ^(deactivated|build_failed|update_failed)$ ]] && echo "❌ Deploy failed: $STATUS" && exit 1
             sleep 15
           done
-          echo "Timed out" && exit 1
+          echo "❌ Timed out" && exit 1
 
       - name: Get inactive slot URL
         id: get-url
         run: |
-          URL=$(curl -sf "${{ env.RENDER_API }}/services/${{ needs.determine-slots.outputs.inactive_service_id }}" \
-            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" | jq -r '.serviceDetails.url')
+          echo "=== FETCHING SERVICE URL ==="
+          RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
+            "${{ env.RENDER_API }}/services/${{ needs.determine-slots.outputs.inactive_service_id }}" \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}")
+          HTTP_STATUS=$(echo "$RESP" | grep "HTTP_STATUS" | cut -d: -f2)
+          BODY=$(echo "$RESP" | grep -v "HTTP_STATUS")
+          URL=$(echo "$BODY" | jq -r '.serviceDetails.url')
+          echo "HTTP=$HTTP_STATUS  URL=$URL"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
-      - name: Pre-switch smoke tests (no user traffic yet)
+      - name: Pre-switch smoke tests
         run: |
           BASE_URL="${{ steps.get-url.outputs.url }}"
-          echo "Testing ${{ needs.determine-slots.outputs.inactive_slot }} before switching traffic"
-          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "$BASE_URL/health")
-          [ "$STATUS" != "200" ] && echo "Health check failed: HTTP $STATUS" && exit 1
+          echo "=== SMOKE TESTS against $BASE_URL ==="
+
+          echo "--- /health ---"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/health")
+          echo "HTTP: $STATUS"
+          [ "$STATUS" != "200" ] && echo "❌ /health failed" && exit 1
           echo "✓ /health → 200"
-          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "$BASE_URL/docs")
-          [[ ! "$STATUS" =~ ^(200|301|302)$ ]] && echo "Docs check failed: HTTP $STATUS" && exit 1
+
+          echo "--- /docs ---"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/docs")
+          echo "HTTP: $STATUS"
+          [[ ! "$STATUS" =~ ^(200|301|302)$ ]] && echo "❌ /docs failed" && exit 1
           echo "✓ /docs → $STATUS"
-          echo "Pre-switch checks passed — ready to switch traffic"
 
   # ──────────────────────────────────────────────────────────
-  # Step 3: switch traffic — write new ACTIVE_SLOT to Cloudflare KV.
-  # Worker picks up the new value on the next request (instant).
-  # Old slot stays running as an instant rollback target.
+  # Step 3: switch traffic via Cloudflare KV
   # ──────────────────────────────────────────────────────────
   switch-traffic:
     name: 🔀 Switch Traffic → ${{ needs.determine-slots.outputs.inactive_slot }}
@@ -224,19 +324,28 @@ jobs:
       - name: Write new ACTIVE_SLOT to Cloudflare KV
         run: |
           NEW_SLOT="${{ needs.determine-slots.outputs.inactive_slot }}"
-          curl -sf -X PUT \
-            "${{ env.CF_API }}/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}/values/ACTIVE_SLOT" \
-            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
-            -d "$NEW_SLOT"
-          echo "KV ACTIVE_SLOT → $NEW_SLOT"
+          echo "=== SWITCHING TRAFFIC: ACTIVE_SLOT → $NEW_SLOT ==="
+          KV_URL="${{ env.CF_API }}/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}/values/ACTIVE_SLOT"
+          echo "KV URL: $KV_URL"
 
-      - name: Post-switch smoke test (Worker URL)
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT "$KV_URL" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+            -d "$NEW_SLOT")
+          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
+          BODY=$(echo "$RESPONSE" | grep -v "HTTP_STATUS")
+          echo "KV write status: $HTTP_STATUS"
+          echo "KV write body  : $BODY"
+          [ "$HTTP_STATUS" != "200" ] && echo "❌ KV write failed" && exit 1
+          echo "✓ ACTIVE_SLOT → $NEW_SLOT"
+
+      - name: Post-switch smoke test
         run: |
+          echo "=== POST-SWITCH TEST: https://${{ vars.PRODUCTION_DOMAIN }}/health ==="
           sleep 3
-          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "https://${{ vars.PRODUCTION_DOMAIN }}/health")
-          [ "$STATUS" != "200" ] && echo "Post-switch health check failed: HTTP $STATUS" && exit 1
-          echo "✓ https://${{ vars.PRODUCTION_DOMAIN }}/health → 200"
-          echo "Traffic now routed to ${{ needs.determine-slots.outputs.inactive_slot }} slot"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://${{ vars.PRODUCTION_DOMAIN }}/health")
+          echo "HTTP: $STATUS"
+          [ "$STATUS" != "200" ] && echo "❌ Post-switch health check failed" && exit 1
+          echo "✓ Production /health → 200"
 
   # ──────────────────────────────────────────────────────────
   # Step 4: summary
@@ -245,20 +354,22 @@ jobs:
     name: ✅ Production Live
     runs-on: ubuntu-latest
     needs: [determine-slots, deploy-inactive-slot, switch-traffic]
+    if: always()
     steps:
       - name: Summary
         run: |
-          echo "## 🟩 Blue-Green Deploy Complete" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🟩 Blue-Green Deploy" >> $GITHUB_STEP_SUMMARY
           echo "| | |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **determine-slots**    | ${{ needs.determine-slots.result }} |"    >> $GITHUB_STEP_SUMMARY
+          echo "| **deploy-inactive**    | ${{ needs.deploy-inactive-slot.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **switch-traffic**     | ${{ needs.switch-traffic.result }} |"     >> $GITHUB_STEP_SUMMARY
           echo "| **Now live** | \`${{ needs.determine-slots.outputs.inactive_slot }}\` slot |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Standby** | \`${{ needs.determine-slots.outputs.active_slot }}\` slot (instant rollback) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Standby**  | \`${{ needs.determine-slots.outputs.active_slot }}\` slot |" >> $GITHUB_STEP_SUMMARY
           echo "| **Production** | https://${{ vars.PRODUCTION_DOMAIN }} |" >> $GITHUB_STEP_SUMMARY
 
   # ──────────────────────────────────────────────────────────
-  # AUTO-ROLLBACK — fires only when switch-traffic fails.
-  # Reverts KV ACTIVE_SLOT back to the previously active slot.
+  # AUTO-ROLLBACK — fires only when switch-traffic fails
   # ──────────────────────────────────────────────────────────
   auto-rollback:
     name: ⏪ Auto-Rollback → ${{ needs.determine-slots.outputs.active_slot }}
@@ -266,65 +377,86 @@ jobs:
     needs: [determine-slots, switch-traffic]
     if: always() && needs.determine-slots.result == 'success' && needs.switch-traffic.result == 'failure'
     steps:
-      - name: Revert KV ACTIVE_SLOT to previous active slot
+      - name: Revert KV ACTIVE_SLOT
         run: |
           PREV_SLOT="${{ needs.determine-slots.outputs.active_slot }}"
-          curl -sf -X PUT \
+          echo "=== AUTO-ROLLBACK: reverting ACTIVE_SLOT → $PREV_SLOT ==="
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT \
             "${{ env.CF_API }}/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}/values/ACTIVE_SLOT" \
             -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
-            -d "$PREV_SLOT"
-          echo "KV ACTIVE_SLOT reverted to $PREV_SLOT"
-
-      - name: Summary
-        run: |
-          echo "## ⏪ Auto-Rollback Executed" >> $GITHUB_STEP_SUMMARY
-          echo "Traffic reverted to: \`${{ needs.determine-slots.outputs.active_slot }}\` slot" >> $GITHUB_STEP_SUMMARY
+            -d "$PREV_SLOT")
+          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
+          echo "KV revert status: $HTTP_STATUS"
+          echo "⏪ ACTIVE_SLOT reverted to $PREV_SLOT"
 
   # ──────────────────────────────────────────────────────────
-  # MANUAL ROLLBACK — workflow_dispatch action=rollback.
-  # Reads current KV ACTIVE_SLOT and switches to the other slot.
+  # MANUAL ROLLBACK — workflow_dispatch action=rollback
   # ──────────────────────────────────────────────────────────
   manual-rollback:
     name: ⏪ Manual Rollback
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' && inputs.action == 'rollback'
     steps:
-      - name: Read current ACTIVE_SLOT and determine rollback target
+      - name: "🔍 Secrets check"
+        run: |
+          echo "=== SECRETS LENGTH CHECK ==="
+          [ -z "$CF_TOKEN" ]   && echo "❌ CLOUDFLARE_API_TOKEN is EMPTY"        || echo "✓ CLOUDFLARE_API_TOKEN"
+          [ -z "$CF_ACCOUNT" ] && echo "❌ CLOUDFLARE_ACCOUNT_ID is EMPTY"      || echo "✓ CLOUDFLARE_ACCOUNT_ID"
+          [ -z "$CF_KV" ]      && echo "❌ CLOUDFLARE_KV_NAMESPACE_ID is EMPTY" || echo "✓ CLOUDFLARE_KV_NAMESPACE_ID"
+        env:
+          CF_TOKEN:   ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_KV:      ${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}
+
+      - name: Read current ACTIVE_SLOT and switch to other slot
         id: resolve
         run: |
+          echo "=== READING CURRENT ACTIVE_SLOT ==="
           RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
             "${{ env.CF_API }}/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}/values/ACTIVE_SLOT" \
             -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}")
           HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
           CURRENT=$(echo "$RESPONSE" | grep -v "HTTP_STATUS")
-          [ "$HTTP_STATUS" != "200" ] || [ -z "$CURRENT" ] || [ "$CURRENT" = "null" ] && CURRENT="blue"
+          echo "KV status : $HTTP_STATUS"
+          echo "KV current: $CURRENT"
+          [ "$HTTP_STATUS" != "200" ] || [ -z "$CURRENT" ] && CURRENT="blue"
 
           if [ "$CURRENT" = "green" ]; then
             TARGET="blue"; TARGET_ID="${{ secrets.RENDER_BLUE_SERVICE_ID }}"
           else
             TARGET="green"; TARGET_ID="${{ secrets.RENDER_GREEN_SERVICE_ID }}"
           fi
+          echo "Rolling back from $CURRENT → $TARGET  (ID len: ${#TARGET_ID})"
+          [ -z "$TARGET_ID" ] && echo "❌ Target service ID is empty" && exit 1
+
           echo "target_slot=$TARGET"          >> "$GITHUB_OUTPUT"
           echo "target_service_id=$TARGET_ID" >> "$GITHUB_OUTPUT"
-          echo "Rolling back from $CURRENT to $TARGET"
 
-      - name: Smoke test rollback target before switching
+      - name: Smoke test rollback target
         run: |
-          BASE_URL=$(curl -sf "${{ env.RENDER_API }}/services/${{ steps.resolve.outputs.target_service_id }}" \
+          echo "=== SMOKE TEST ON ROLLBACK TARGET ==="
+          BASE_URL=$(curl -s \
+            "${{ env.RENDER_API }}/services/${{ steps.resolve.outputs.target_service_id }}" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" | jq -r '.serviceDetails.url')
-          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "$BASE_URL/health")
-          [ "$STATUS" != "200" ] && echo "Rollback target health check failed: HTTP $STATUS" && exit 1
+          echo "Target URL: $BASE_URL"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/health")
+          echo "HTTP: $STATUS"
+          [ "$STATUS" != "200" ] && echo "❌ Rollback target unhealthy" && exit 1
           echo "✓ Rollback target /health → 200"
 
-      - name: Switch KV ACTIVE_SLOT to rollback target
+      - name: Switch KV to rollback target
         run: |
-          curl -sf -X PUT \
+          echo "=== SWITCHING ACTIVE_SLOT → ${{ steps.resolve.outputs.target_slot }} ==="
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT \
             "${{ env.CF_API }}/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}/values/ACTIVE_SLOT" \
             -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
-            -d "${{ steps.resolve.outputs.target_slot }}"
-          echo "KV ACTIVE_SLOT → ${{ steps.resolve.outputs.target_slot }}"
+            -d "${{ steps.resolve.outputs.target_slot }}")
+          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
+          echo "KV write status: $HTTP_STATUS"
+          [ "$HTTP_STATUS" != "200" ] && echo "❌ KV write failed" && exit 1
+          echo "✓ ACTIVE_SLOT → ${{ steps.resolve.outputs.target_slot }}"
 
       - name: Summary
         run: |
-          echo "## ⏪ Manual Rollback Complete" >> $GITHUB_STEP_SUMMARY
+          echo "## ⏪ Manual Rollback" >> $GITHUB_STEP_SUMMARY
           echo "Now routed to: \`${{ steps.resolve.outputs.target_slot }}\` slot" >> $GITHUB_STEP_SUMMARY
