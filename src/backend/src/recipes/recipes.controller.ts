@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Logger,
   Param,
   ParseUUIDPipe,
   Post,
@@ -32,6 +33,8 @@ import { RecipesService } from './recipes.service';
 @ApiTags('recipes')
 @Controller()
 export class RecipesController {
+  private readonly logger = new Logger(RecipesController.name);
+
   constructor(private readonly recipes: RecipesService) {}
 
   @Post('generate')
@@ -41,8 +44,11 @@ export class RecipesController {
       'Builds random recipe data, saves it, and returns the full payload for the recipe page.',
   })
   @ApiCreatedResponse({ type: RecipePageResponseDto })
-  generate() {
-    return this.recipes.generateAndSave();
+  async generate() {
+    this.logger.log('POST /generate — generating recipe');
+    const result = await this.recipes.generateAndSave();
+    this.logger.log(`POST /generate — saved recipe id=${result.id}`);
+    return result;
   }
 
   @Get('recipes/:id')
@@ -50,7 +56,8 @@ export class RecipesController {
   @ApiParam({ name: 'id', format: 'uuid', description: 'Recipe id' })
   @ApiOkResponse({ type: RecipePageResponseDto })
   @ApiNotFoundResponse({ description: 'Recipe not found' })
-  getById(@Param('id', ParseUUIDPipe) id: string) {
+  async getById(@Param('id', ParseUUIDPipe) id: string) {
+    this.logger.log(`GET /recipes/${id}`);
     return this.recipes.findById(id);
   }
 
@@ -59,10 +66,11 @@ export class RecipesController {
   @ApiParam({ name: 'id', format: 'uuid', description: 'Recipe id' })
   @ApiOkResponse({ type: ListReviewsResponseDto })
   @ApiNotFoundResponse({ description: 'Recipe not found' })
-  listReviews(
+  async listReviews(
     @Param('id', ParseUUIDPipe) id: string,
     @Query() query: ListReviewsQueryDto,
   ) {
+    this.logger.log(`GET /recipes/${id}/reviews`);
     return this.recipes.listReviews(id, query);
   }
 
@@ -74,11 +82,14 @@ export class RecipesController {
   @ApiCreatedResponse({ type: ReviewItemResponseDto })
   @ApiNotFoundResponse({ description: 'Recipe not found' })
   @ApiConflictResponse({ description: 'User already reviewed this recipe' })
-  addReview(
+  async addReview(
     @Param('id', ParseUUIDPipe) id: string,
     @Req() req: { user: { id: string; email: string } },
     @Body() dto: CreateReviewDto,
   ) {
+    this.logger.log(
+      `POST /recipes/${id}/reviews — user=${req.user.email} rating=${dto.rating}`,
+    );
     return this.recipes.createReview(id, req.user, dto);
   }
 }
