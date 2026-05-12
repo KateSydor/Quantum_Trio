@@ -145,10 +145,8 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' && inputs.action == 'deploy-production'
     outputs:
-      active_slot:         ${{ steps.resolve.outputs.active_slot }}
-      inactive_slot:       ${{ steps.resolve.outputs.inactive_slot }}
-      active_service_id:   ${{ steps.resolve.outputs.active_service_id }}
-      inactive_service_id: ${{ steps.resolve.outputs.inactive_service_id }}
+      active_slot:   ${{ steps.resolve.outputs.active_slot }}
+      inactive_slot: ${{ steps.resolve.outputs.inactive_slot }}
     steps:
       - name: "🔍 Secrets check"
         run: |
@@ -204,19 +202,13 @@ jobs:
             INACTIVE_ID="${{ secrets.RENDER_GREEN_SERVICE_ID }}"
           fi
 
-          echo "Active slot  : $ACTIVE  (service ID len: ${#ACTIVE_ID})"
-          echo "Inactive slot: $INACTIVE (service ID len: ${#INACTIVE_ID})"
-
-          if [ -z "$INACTIVE_ID" ]; then
-            echo "❌ ERROR: service ID for '$INACTIVE' slot is empty"
-            echo "   → Check that RENDER_BLUE_SERVICE_ID / RENDER_GREEN_SERVICE_ID are added as Secrets (not Variables)"
-            exit 1
-          fi
-
-          echo "active_slot=$ACTIVE"              >> "$GITHUB_OUTPUT"
-          echo "inactive_slot=$INACTIVE"          >> "$GITHUB_OUTPUT"
-          echo "active_service_id=$ACTIVE_ID"     >> "$GITHUB_OUTPUT"
-          echo "inactive_service_id=$INACTIVE_ID" >> "$GITHUB_OUTPUT"
+          # Only slot names are passed through outputs — secret values cannot be
+          # passed through job outputs (GitHub Actions strips them for security).
+          # Service IDs are read directly from secrets in each downstream job.
+          echo "Active slot  : $ACTIVE"
+          echo "Inactive slot: $INACTIVE"
+          echo "active_slot=$ACTIVE"    >> "$GITHUB_OUTPUT"
+          echo "inactive_slot=$INACTIVE" >> "$GITHUB_OUTPUT"
           echo "✓ Slots resolved — deploying to: $INACTIVE"
 
   # ──────────────────────────────────────────────────────────
@@ -233,18 +225,27 @@ jobs:
       slot_url:  ${{ steps.get-url.outputs.url }}
       deploy_id: ${{ steps.trigger.outputs.deploy_id }}
     steps:
-      - name: "🔍 Received slot info"
+      - name: "🔍 Resolve service ID from slot name"
+        id: resolve-svc
         run: |
-          echo "=== INPUTS FROM determine-slots ==="
-          echo "inactive_slot      : ${{ needs.determine-slots.outputs.inactive_slot }}"
-          echo "inactive_service_id: ${{ needs.determine-slots.outputs.inactive_service_id }}"
-          echo "active_slot        : ${{ needs.determine-slots.outputs.active_slot }}"
+          SLOT="${{ needs.determine-slots.outputs.inactive_slot }}"
+          echo "=== RESOLVE SERVICE ID FOR SLOT: $SLOT ==="
+          if [ "$SLOT" = "green" ]; then
+            SVC_ID="${{ secrets.RENDER_GREEN_SERVICE_ID }}"
+          else
+            SVC_ID="${{ secrets.RENDER_BLUE_SERVICE_ID }}"
+          fi
+          echo "Service ID length: ${#SVC_ID} chars"
+          [ -z "$SVC_ID" ] && echo "❌ Service ID for '$SLOT' slot is EMPTY — check RENDER_BLUE_SERVICE_ID / RENDER_GREEN_SERVICE_ID secrets" && exit 1
+          echo "✓ Service ID resolved"
+          echo "svc_id=$SVC_ID" >> "$GITHUB_OUTPUT"
 
       - name: Trigger deploy on inactive slot
         id: trigger
         run: |
-          SVC_ID="${{ needs.determine-slots.outputs.inactive_service_id }}"
-          echo "=== TRIGGERING DEPLOY ON ${{ needs.determine-slots.outputs.inactive_slot }} SLOT ==="
+          SVC_ID="${{ steps.resolve-svc.outputs.svc_id }}"
+          SLOT="${{ needs.determine-slots.outputs.inactive_slot }}"
+          echo "=== TRIGGERING DEPLOY ON $SLOT SLOT ==="
           echo "Service ID : $SVC_ID"
           echo "URL        : ${{ env.RENDER_API }}/services/$SVC_ID/deploys"
 
@@ -269,10 +270,11 @@ jobs:
       - name: Wait for deploy
         timeout-minutes: 10
         run: |
+          SVC_ID="${{ steps.resolve-svc.outputs.svc_id }}"
           echo "=== POLLING DEPLOY: ${{ steps.trigger.outputs.deploy_id }} ==="
           for i in $(seq 1 40); do
             RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
-              "${{ env.RENDER_API }}/services/${{ needs.determine-slots.outputs.inactive_service_id }}/deploys/${{ steps.trigger.outputs.deploy_id }}" \
+              "${{ env.RENDER_API }}/services/$SVC_ID/deploys/${{ steps.trigger.outputs.deploy_id }}" \
               -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}")
             HTTP_STATUS=$(echo "$RESP" | grep "HTTP_STATUS" | cut -d: -f2)
             STATUS=$(echo "$RESP" | grep -v "HTTP_STATUS" | jq -r '.status')
@@ -286,9 +288,10 @@ jobs:
       - name: Get inactive slot URL
         id: get-url
         run: |
+          SVC_ID="${{ steps.resolve-svc.outputs.svc_id }}"
           echo "=== FETCHING SERVICE URL ==="
           RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
-            "${{ env.RENDER_API }}/services/${{ needs.determine-slots.outputs.inactive_service_id }}" \
+            "${{ env.RENDER_API }}/services/$SVC_ID" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}")
           HTTP_STATUS=$(echo "$RESP" | grep "HTTP_STATUS" | cut -d: -f2)
           BODY=$(echo "$RESP" | grep -v "HTTP_STATUS")
@@ -408,7 +411,7 @@ jobs:
           CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_KV:      ${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}
 
-      - name: Read current ACTIVE_SLOT and switch to other slot
+      - name: Read current ACTIVE_SLOT and determine target
         id: resolve
         run: |
           echo "=== READING CURRENT ACTIVE_SLOT ==="
@@ -421,22 +424,21 @@ jobs:
           echo "KV current: $CURRENT"
           [ "$HTTP_STATUS" != "200" ] || [ -z "$CURRENT" ] && CURRENT="blue"
 
-          if [ "$CURRENT" = "green" ]; then
-            TARGET="blue"; TARGET_ID="${{ secrets.RENDER_BLUE_SERVICE_ID }}"
-          else
-            TARGET="green"; TARGET_ID="${{ secrets.RENDER_GREEN_SERVICE_ID }}"
-          fi
-          echo "Rolling back from $CURRENT → $TARGET  (ID len: ${#TARGET_ID})"
-          [ -z "$TARGET_ID" ] && echo "❌ Target service ID is empty" && exit 1
-
-          echo "target_slot=$TARGET"          >> "$GITHUB_OUTPUT"
-          echo "target_service_id=$TARGET_ID" >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" = "green" ]; then TARGET="blue"; else TARGET="green"; fi
+          echo "Rolling back from $CURRENT → $TARGET"
+          echo "target_slot=$TARGET" >> "$GITHUB_OUTPUT"
 
       - name: Smoke test rollback target
         run: |
-          echo "=== SMOKE TEST ON ROLLBACK TARGET ==="
-          BASE_URL=$(curl -s \
-            "${{ env.RENDER_API }}/services/${{ steps.resolve.outputs.target_service_id }}" \
+          TARGET="${{ steps.resolve.outputs.target_slot }}"
+          if [ "$TARGET" = "green" ]; then
+            SVC_ID="${{ secrets.RENDER_GREEN_SERVICE_ID }}"
+          else
+            SVC_ID="${{ secrets.RENDER_BLUE_SERVICE_ID }}"
+          fi
+          echo "=== SMOKE TEST ON ROLLBACK TARGET ($TARGET) ==="
+          [ -z "$SVC_ID" ] && echo "❌ Service ID empty for target slot $TARGET" && exit 1
+          BASE_URL=$(curl -s "${{ env.RENDER_API }}/services/$SVC_ID" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" | jq -r '.serviceDetails.url')
           echo "Target URL: $BASE_URL"
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/health")
@@ -446,15 +448,16 @@ jobs:
 
       - name: Switch KV to rollback target
         run: |
-          echo "=== SWITCHING ACTIVE_SLOT → ${{ steps.resolve.outputs.target_slot }} ==="
+          TARGET="${{ steps.resolve.outputs.target_slot }}"
+          echo "=== SWITCHING ACTIVE_SLOT → $TARGET ==="
           RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT \
             "${{ env.CF_API }}/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}/values/ACTIVE_SLOT" \
             -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
-            -d "${{ steps.resolve.outputs.target_slot }}")
+            -d "$TARGET")
           HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
           echo "KV write status: $HTTP_STATUS"
           [ "$HTTP_STATUS" != "200" ] && echo "❌ KV write failed" && exit 1
-          echo "✓ ACTIVE_SLOT → ${{ steps.resolve.outputs.target_slot }}"
+          echo "✓ ACTIVE_SLOT → $TARGET"
 
       - name: Summary
         run: |
