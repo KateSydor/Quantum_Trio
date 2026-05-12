@@ -24,6 +24,7 @@ export type AppConfiguration = {
     port: number;
   };
   database: {
+    url?: string;
     host: string;
     port: number;
     username: string;
@@ -44,6 +45,8 @@ export function loadConfiguration(): AppConfiguration {
       port: parseIntWithDefault(process.env.PORT, 3000),
     },
     database: {
+      // DATABASE_URL (Render format) takes priority over individual DB_* vars
+      url: process.env.DATABASE_URL,
       host: process.env.DB_HOST ?? 'localhost',
       port: parseIntWithDefault(process.env.DB_PORT, 5432),
       username: process.env.DB_USERNAME ?? 'postgres',

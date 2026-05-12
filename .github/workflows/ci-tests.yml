@@ -1,9 +1,9 @@
 # ═══════════════════════════════════════════════════════════
-# CI/CD Pipeline — RecipeAI Testing
-# Автоматизовані тести інтегровані в GitHub Actions
+# CI/CD Pipeline — RecipeAI
+# Запускається при кожному push та pull request
 # ═══════════════════════════════════════════════════════════
 
-name: RecipeAI — CI Tests
+name: RecipeAI — CI
 
 on:
   push:
@@ -11,20 +11,62 @@ on:
   pull_request:
     branches: [main, develop]
   schedule:
-    # Nightly tests — кожен день о 2:00 UTC
+    # Nightly build — кожен день о 2:00 UTC
     - cron: '0 2 * * *'
+
+permissions:
+  contents: read
+  checks: write        # required for dorny/test-reporter to create check runs
+  pull-requests: read  # needed to read PR context
 
 env:
   NODE_VERSION: '20'
-  JAVA_VERSION: '17'
 
+# ──────────────────────────────────────────────────────────
+# 1. BUILD + LINT
+#    Компіляція TypeScript та перевірка якості коду.
+#    Усі наступні jobs залежать від цього.
+# ──────────────────────────────────────────────────────────
 jobs:
-  # ──────────────────────────────────
-  # 1. FRONTEND UNIT TESTS
-  # ──────────────────────────────────
+  build-and-lint:
+    name: 🔨 Build & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Lint frontend
+        run: npm run lint -- --max-warnings=0
+
+      - name: Install backend dependencies
+        run: npm ci
+        working-directory: src/backend
+
+      - name: Lint backend
+        # Перевіряємо без --fix щоб CI просто падав на помилках
+        run: npx eslint "{src,apps,libs,test}/**/*.ts" --max-warnings=0
+        working-directory: src/backend
+
+      - name: Build backend (TypeScript compilation check)
+        run: npm run build
+        working-directory: src/backend
+
+  # ──────────────────────────────────────────────────────────
+  # 2. FRONTEND UNIT TESTS
+  # ──────────────────────────────────────────────────────────
   frontend-unit-tests:
     name: 🧪 Frontend Unit Tests
     runs-on: ubuntu-latest
+    needs: build-and-lint
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -39,21 +81,35 @@ jobs:
         run: npm ci
 
       - name: Run unit tests
-        run: npm run test:unit -- --ci --coverage
+        run: npm run test:unit -- --ci --coverage --reporters=default --reporters=jest-junit
+        env:
+          JEST_JUNIT_OUTPUT_DIR: test-results
+          JEST_JUNIT_OUTPUT_NAME: frontend-unit.xml
+          JEST_JUNIT_SUITE_NAME: 'Frontend Unit Tests'
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: frontend-unit-coverage
           path: coverage/
           retention-days: 14
 
-  # ──────────────────────────────────
-  # 2. FRONTEND INTEGRATION TESTS
-  # ──────────────────────────────────
+      - name: Upload JUnit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-frontend-unit
+          path: test-results/frontend-unit.xml
+          retention-days: 14
+
+  # ──────────────────────────────────────────────────────────
+  # 3. FRONTEND INTEGRATION TESTS
+  # ──────────────────────────────────────────────────────────
   frontend-integration-tests:
     name: 🔗 Frontend Integration Tests
     runs-on: ubuntu-latest
+    needs: build-and-lint
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -68,14 +124,28 @@ jobs:
         run: npm ci
 
       - name: Run integration tests
-        run: npm run test:integration -- --ci
+        run: npm run test:integration -- --ci --reporters=default --reporters=jest-junit
+        env:
+          JEST_JUNIT_OUTPUT_DIR: test-results
+          JEST_JUNIT_OUTPUT_NAME: frontend-integration.xml
+          JEST_JUNIT_SUITE_NAME: 'Frontend Integration Tests'
 
-  # ──────────────────────────────────
-  # 3. API TESTS
-  # ──────────────────────────────────
+      - name: Upload JUnit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-frontend-integration
+          path: test-results/frontend-integration.xml
+          retention-days: 14
+
+  # ──────────────────────────────────────────────────────────
+  # 4. API / BACKEND TESTS (реальний NestJS)
+  #    Потребує src/backend/node_modules
+  # ──────────────────────────────────────────────────────────
   api-tests:
-    name: 🌐 API Tests
+    name: 🌐 API Tests (NestJS)
     runs-on: ubuntu-latest
+    needs: build-and-lint
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -86,17 +156,134 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      - name: Install dependencies
+      - name: Install root dependencies
         run: npm ci
 
-      - name: Run API tests
-        run: npm run test:api -- --ci
+      - name: Install backend dependencies
+        # Потрібно для @nestjs/testing, supertest та інших пакетів з src/backend/node_modules
+        run: npm ci
+        working-directory: src/backend
 
-  # ──────────────────────────────────
-  # 4. E2E / UI TESTS (Playwright)
-  # ──────────────────────────────────
+      - name: Run API tests
+        run: npm run test:api -- --ci --reporters=default --reporters=jest-junit
+        env:
+          JEST_JUNIT_OUTPUT_DIR: test-results
+          JEST_JUNIT_OUTPUT_NAME: api.xml
+          JEST_JUNIT_SUITE_NAME: 'API Tests'
+
+      - name: Upload JUnit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-api
+          path: test-results/api.xml
+          retention-days: 14
+
+  # ──────────────────────────────────────────────────────────
+  # 5. FULL TEST SUITE + CODE COVERAGE
+  #    Запускається після всіх індивідуальних jobs
+  # ──────────────────────────────────────────────────────────
+  full-test-suite:
+    name: ✅ Full Suite + Coverage
+    runs-on: ubuntu-latest
+    needs: [frontend-unit-tests, frontend-integration-tests, api-tests]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install backend dependencies
+        run: npm ci
+        working-directory: src/backend
+
+      - name: Run full test suite with coverage
+        run: npm run test:ci
+
+      - name: Upload full coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: full-coverage
+          path: coverage/
+          retention-days: 30
+
+      - name: Coverage Summary
+        if: always()
+        run: |
+          echo "## 📊 Code Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f coverage/coverage-summary.json ]; then
+            node -e "
+              const s = require('./coverage/coverage-summary.json').total;
+              const pct = k => s[k].pct + '%';
+              console.log('| Metric | Coverage |');
+              console.log('|--------|----------|');
+              console.log('| Statements | ' + pct('statements') + ' |');
+              console.log('| Branches   | ' + pct('branches')   + ' |');
+              console.log('| Functions  | ' + pct('functions')  + ' |');
+              console.log('| Lines      | ' + pct('lines')      + ' |');
+            " >> $GITHUB_STEP_SUMMARY
+          else
+            echo "_Coverage summary not available_" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ──────────────────────────────────────────────────────────
+  # 6. CONSOLIDATED TEST REPORT
+  #    Збирає всі JUnit XML і публікує один звіт у GitHub Checks.
+  #    Запускається завжди — навіть якщо тести впали.
+  # ──────────────────────────────────────────────────────────
+  publish-reports:
+    name: 📋 Test Reports
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [frontend-unit-tests, frontend-integration-tests, api-tests]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download frontend unit results
+        uses: actions/download-artifact@v4
+        with:
+          name: junit-frontend-unit
+          path: test-results
+        continue-on-error: true
+
+      - name: Download frontend integration results
+        uses: actions/download-artifact@v4
+        with:
+          name: junit-frontend-integration
+          path: test-results
+        continue-on-error: true
+
+      - name: Download API test results
+        uses: actions/download-artifact@v4
+        with:
+          name: junit-api
+          path: test-results
+        continue-on-error: true
+
+      - name: Publish consolidated test report
+        uses: dorny/test-reporter@v1
+        with:
+          name: 📋 Test Results
+          path: 'test-results/*.xml'
+          reporter: jest-junit
+          fail-on-error: false
+
+  # ──────────────────────────────────────────────────────────
+  # 7. E2E / UI TESTS (Playwright)
+  #    Тільки для PR та nightly builds
+  # ──────────────────────────────────────────────────────────
   e2e-tests:
-    name: 🎭 E2E UI Tests (Playwright)
+    name: 🎭 E2E Tests (Playwright)
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || github.event_name == 'pull_request'
     needs: [frontend-unit-tests, frontend-integration-tests]
@@ -124,53 +311,12 @@ jobs:
         if: always()
         with:
           name: playwright-report
-          path: test-results/playwright-report/
+          path: playwright-report/
           retention-days: 14
 
-  # ──────────────────────────────────
-  # 5. ALL TESTS COMBINED (Coverage)
-  # ──────────────────────────────────
-  full-test-suite:
-    name: ✅ Full Test Suite + Coverage
-    runs-on: ubuntu-latest
-    needs: [frontend-unit-tests, frontend-integration-tests, api-tests]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run all tests with coverage
-        run: npm run test:ci
-
-      - name: Upload full coverage
-        uses: actions/upload-artifact@v4
-        with:
-          name: full-coverage
-          path: coverage/
-          retention-days: 30
-
-      - name: Test Summary
-        if: always()
-        run: |
-          echo "## 🧪 Test Results Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Suite | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Unit Tests | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Integration Tests | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| API Tests | ✅ |" >> $GITHUB_STEP_SUMMARY
-
-  # ──────────────────────────────────
-  # 6. NIGHTLY PERFORMANCE TESTS
-  # ──────────────────────────────────
+  # ──────────────────────────────────────────────────────────
+  # 8. NIGHTLY PERFORMANCE TESTS (k6)
+  # ──────────────────────────────────────────────────────────
   performance-tests:
     name: ⚡ Performance Tests (k6)
     runs-on: ubuntu-latest
@@ -180,12 +326,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install k6
-        run: |
-          sudo gpg -k
-          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D68
-          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
-          sudo apt-get update
-          sudo apt-get install k6
+        uses: grafana/setup-k6-action@v1
 
       - name: Run performance tests
         run: k6 run tests/performance/load-test.js
@@ -199,4 +340,3 @@ jobs:
           name: k6-results
           path: k6-results/
           retention-days: 14
-

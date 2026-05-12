@@ -3,7 +3,7 @@
  * Тести робочого процесу генерації рецептів
  */
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import GeneratePage from '../../../UI_prototype/src/pages/Generate';
 import { RouterProvider } from '../../../UI_prototype/src/router';
@@ -20,11 +20,12 @@ function renderGenerate() {
 describe('Generate Page — Integration', () => {
   // IT-GEN-001
   test('renders with default 4 ingredients', () => {
-    renderGenerate();
-    expect(screen.getByText('🥚 Яйця')).toBeInTheDocument();
-    expect(screen.getByText('🌿 Шпинат')).toBeInTheDocument();
-    expect(screen.getByText('🧀 Сир фета')).toBeInTheDocument();
-    expect(screen.getByText('🧅 Цибуля')).toBeInTheDocument();
+    const { container } = renderGenerate();
+    const ingBox = container.querySelector('.ing-tags')!;
+    expect(ingBox.textContent).toContain('🥚 Яйця');
+    expect(ingBox.textContent).toContain('🌿 Шпинат');
+    expect(ingBox.textContent).toContain('🧀 Сир фета');
+    expect(ingBox.textContent).toContain('🧅 Цибуля');
   });
 
   // IT-GEN-002
@@ -33,7 +34,9 @@ describe('Generate Page — Integration', () => {
     renderGenerate();
     const input = screen.getByPlaceholderText(/Додай ще інгредієнт/);
     await user.type(input, 'Помідори{enter}');
-    expect(screen.getByText('Помідори')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText('Помідори')).toBeInTheDocument();
+    });
   });
 
   // IT-GEN-003
@@ -63,12 +66,14 @@ describe('Generate Page — Integration', () => {
   test('meal type selection changes active card', async () => {
     const user = userEvent.setup();
     const { container } = renderGenerate();
-    // Обід card
     const lunchCard = screen.getByText('Обід').closest('.type-card');
     await user.click(lunchCard!);
     expect(lunchCard).toHaveClass('type-card--selected');
-    // Сніданок should no longer be selected
-    const breakfastCard = screen.getByText('Сніданок').closest('.type-card');
+    // Find Сніданок inside .type-grid to avoid sidebar duplicate
+    const typeGrid = container.querySelector('.type-grid')!;
+    const breakfastCard = Array.from(typeGrid.querySelectorAll('.type-card')).find(
+      el => el.textContent?.includes('Сніданок')
+    );
     expect(breakfastCard).not.toHaveClass('type-card--selected');
   });
 
@@ -107,8 +112,9 @@ describe('Generate Page — Integration', () => {
 
   // IT-GEN-009
   test('sidebar shows meal type', () => {
-    renderGenerate();
-    expect(screen.getByText('Сніданок')).toBeInTheDocument();
+    const { container } = renderGenerate();
+    const sidebar = container.querySelector('.gen-sidebar')!;
+    expect(sidebar.textContent).toContain('Сніданок');
   });
 
   // IT-GEN-010

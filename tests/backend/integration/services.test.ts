@@ -1,361 +1,475 @@
 /**
- * Backend Integration Tests
- * Тести інтеграції між модулями бекенду
- * В реальному проєкті — Spring Boot @SpringBootTest + TestContainers
+ * Backend Integration Tests — Real NestJS Services
+ *
+ * Creates actual NestJS service instances via TestingModule.
+ * TypeORM repositories are replaced with jest mocks — no database required.
+ * Tests exercise real service logic: bcrypt hashing, JWT signing, exception
+ * throwing, entity mapping, and query builder usage.
  */
 
-/* ═══════ SIMULATED SERVICES ═══════ */
+import { Test, TestingModule } from '@nestjs/testing';
+import {
+  ConflictException,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { JwtModule, JwtService } from '@nestjs/jwt';
+import { getRepositoryToken } from '@nestjs/typeorm';
 
-// Simulated Database (PostgreSQL)
-class UserRepository {
-  private users = new Map<string, any>();
-  private nextId = 1;
+import { AuthService } from '../../../src/backend/src/auth/auth.service';
+import { UsersService } from '../../../src/backend/src/users/users.service';
+import { User } from '../../../src/backend/src/users/user.entity';
 
-  save(user: { name: string; email: string; passwordHash: string; preferences: any }) {
-    const id = String(this.nextId++);
-    const record = { id, ...user, createdAt: new Date().toISOString() };
-    this.users.set(id, record);
-    return record;
-  }
+import { RecipesService } from '../../../src/backend/src/recipes/recipes.service';
+import { Recipe } from '../../../src/backend/src/recipes/entities/recipe.entity';
+import { RecipeReview } from '../../../src/backend/src/recipes/entities/recipe-review.entity';
 
-  findByEmail(email: string) {
-    return Array.from(this.users.values()).find(u => u.email === email) || null;
-  }
+// Skip slow 10-round bcrypt in unit/integration tests
+jest.mock('bcrypt', () => ({
+  hash:    jest.fn().mockResolvedValue('$2b$10$mockhashedpassword'),
+  compare: jest.fn().mockResolvedValue(true),
+}));
 
-  findById(id: string) {
-    return this.users.get(id) || null;
-  }
+/* ═══════ Constants & fixtures ═══════════════════════════════════════════════ */
 
-  count() {
-    return this.users.size;
-  }
+const JWT_SECRET     = 'test-jwt-secret';
+const MOCK_USER_ID   = '550e8400-e29b-41d4-a716-446655440001';
+const MOCK_RECIPE_ID = '550e8400-e29b-41d4-a716-446655440002';
+
+const mockUser: User = {
+  id: MOCK_USER_ID,
+  email: 'test@example.com',
+  passwordHash: '$2b$10$mockhashedpassword',
+  createdAt: new Date('2024-01-01'),
+};
+
+const mockRecipeEntity = {
+  id: MOCK_RECIPE_ID,
+  title: 'Шпинатна яєчня',
+  titleEmphasis: null,
+  bannerEmoji: '🥚',
+  isAiGenerated: true,
+  chefTip: 'Додай щіпку мускату',
+  prepTimeLabel: '15 хв',
+  servings: 2,
+  caloriesKcal: 320,
+  nutritionProtein: 22,
+  nutritionFat: 24,
+  nutritionCarbs: 6,
+  tags: [],
+  ingredients: [],
+  steps: [],
+  reviews: [],
+  createdAt: new Date('2024-01-01'),
+  updatedAt: new Date('2024-01-01'),
+} as unknown as Recipe;
+
+/* ═══════ Mock factories ══════════════════════════════════════════════════════ */
+
+function makeUserRepoMock() {
+  return {
+    findOne: jest.fn(),
+    create:  jest.fn().mockImplementation((dto: Partial<User>) => ({ ...dto })),
+    save:    jest.fn(),
+    count:   jest.fn(),
+  };
 }
 
-class RecipeRepository {
-  private recipes = new Map<string, any>();
-  private nextId = 1;
-
-  save(recipe: any) {
-    const id = String(this.nextId++);
-    const record = { id, ...recipe, createdAt: new Date().toISOString() };
-    this.recipes.set(id, record);
-    return record;
-  }
-
-  findById(id: string) {
-    return this.recipes.get(id) || null;
-  }
-
-  findByUserId(userId: string) {
-    return Array.from(this.recipes.values()).filter(r => r.userId === userId);
-  }
-
-  count() {
-    return this.recipes.size;
-  }
+function makeRecipeRepoMock() {
+  return {
+    findOne: jest.fn(),
+    save:    jest.fn(),
+    count:   jest.fn(),
+  };
 }
 
-// Simulated Cache (Redis)
-class CacheService {
-  private cache = new Map<string, { value: any; expiresAt: number }>();
-
-  set(key: string, value: any, ttlSeconds: number) {
-    this.cache.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
-  }
-
-  get(key: string) {
-    const entry = this.cache.get(key);
-    if (!entry) return null;
-    if (Date.now() > entry.expiresAt) {
-      this.cache.delete(key);
-      return null;
-    }
-    return entry.value;
-  }
-
-  invalidate(key: string) {
-    this.cache.delete(key);
-  }
-
-  size() {
-    return this.cache.size;
-  }
+function makeReviewRepoMock() {
+  const queryBuilder = {
+    select:   jest.fn().mockReturnThis(),
+    where:    jest.fn().mockReturnThis(),
+    getRawOne: jest.fn().mockResolvedValue({ avg: null }),
+  };
+  return {
+    findOne:       jest.fn(),
+    findOneOrFail: jest.fn(),
+    findAndCount:  jest.fn(),
+    create:        jest.fn(),
+    save:          jest.fn(),
+    count:         jest.fn().mockResolvedValue(0),
+    createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
+    queryBuilder,
+  };
 }
 
-// Simulated Auth Service (JWT)
-class AuthService {
-  private userRepo: UserRepository;
+/* ═══════ AuthService ════════════════════════════════════════════════════════ */
 
-  constructor(userRepo: UserRepository) {
-    this.userRepo = userRepo;
-  }
-
-  register(name: string, email: string, password: string) {
-    if (this.userRepo.findByEmail(email)) {
-      throw new Error('Email already exists');
-    }
-    const passwordHash = `hashed_${password}`;
-    const user = this.userRepo.save({ name, email, passwordHash, preferences: {} });
-    return { userId: user.id, token: `jwt_${user.id}_${Date.now()}` };
-  }
-
-  login(email: string, password: string) {
-    const user = this.userRepo.findByEmail(email);
-    if (!user || user.passwordHash !== `hashed_${password}`) {
-      throw new Error('Invalid credentials');
-    }
-    return { userId: user.id, token: `jwt_${user.id}_${Date.now()}` };
-  }
-
-  validateToken(token: string): string | null {
-    if (!token || !token.startsWith('jwt_')) return null;
-    const parts = token.split('_');
-    return parts[1] || null;
-  }
-}
-
-// Simulated Recipe Service
-class RecipeService {
-  private recipeRepo: RecipeRepository;
-  private cache: CacheService;
-
-  constructor(recipeRepo: RecipeRepository, cache: CacheService) {
-    this.recipeRepo = recipeRepo;
-    this.cache = cache;
-  }
-
-  generate(userId: string, ingredients: string[], mealType: string, time: number, servings: number) {
-    if (ingredients.length === 0) throw new Error('No ingredients');
-    const recipe = this.recipeRepo.save({
-      userId,
-      title: `AI Recipe from ${ingredients.join(', ')}`,
-      ingredients,
-      mealType,
-      time,
-      servings,
-      steps: ['Step 1', 'Step 2', 'Step 3'],
-      nutrition: { calories: 320, protein: '22g', fat: '24g', carbs: '6g' },
-    });
-    // Cache the recipe
-    this.cache.set(`recipe_${recipe.id}`, recipe, 3600);
-    return recipe;
-  }
-
-  getById(id: string) {
-    // Try cache first
-    const cached = this.cache.get(`recipe_${id}`);
-    if (cached) return { ...cached, fromCache: true };
-    // Fallback to DB
-    const recipe = this.recipeRepo.findById(id);
-    if (recipe) {
-      this.cache.set(`recipe_${id}`, recipe, 3600);
-    }
-    return recipe ? { ...recipe, fromCache: false } : null;
-  }
-
-  getByUserId(userId: string) {
-    return this.recipeRepo.findByUserId(userId);
-  }
-}
-
-/* ═══════ INTEGRATION TESTS ═══════ */
-
-describe('Integration: Auth + User Repository', () => {
-  let userRepo: UserRepository;
+describe('AuthService', () => {
   let authService: AuthService;
+  let usersService: UsersService;
+  let jwtService:   JwtService;
+  let userRepoMock: ReturnType<typeof makeUserRepoMock>;
 
-  beforeEach(() => {
-    userRepo = new UserRepository();
-    authService = new AuthService(userRepo);
+  beforeEach(async () => {
+    userRepoMock = makeUserRepoMock();
+
+    const module: TestingModule = await Test.createTestingModule({
+      imports: [JwtModule.register({ secret: JWT_SECRET, signOptions: { expiresIn: '1h' } })],
+      providers: [
+        AuthService,
+        UsersService,
+        { provide: getRepositoryToken(User), useValue: userRepoMock },
+      ],
+    }).compile();
+
+    authService  = module.get(AuthService);
+    usersService = module.get(UsersService);
+    jwtService   = module.get(JwtService);
   });
 
   // BI-AUTH-001
-  test('register creates user in repository', () => {
-    const result = authService.register('Олексій', 'oleksiy@example.com', 'pass123');
-    expect(result.userId).toBeDefined();
-    expect(result.token).toBeDefined();
-    expect(userRepo.count()).toBe(1);
+  test('register() returns access_token and user info', async () => {
+    userRepoMock.findOne.mockResolvedValue(null);
+    userRepoMock.save.mockResolvedValue(mockUser);
+
+    const result = await authService.register('test@example.com', 'password123');
+
+    expect(result.access_token).toBeDefined();
+    expect(result.user.id).toBe(MOCK_USER_ID);
+    expect(result.user.email).toBe('test@example.com');
   });
 
   // BI-AUTH-002
-  test('register then login with same credentials', () => {
-    authService.register('Олексій', 'oleksiy@example.com', 'pass123');
-    const loginResult = authService.login('oleksiy@example.com', 'pass123');
-    expect(loginResult.token).toBeDefined();
+  test('register() token payload contains correct sub and email', async () => {
+    userRepoMock.findOne.mockResolvedValue(null);
+    userRepoMock.save.mockResolvedValue(mockUser);
+
+    const { access_token } = await authService.register('test@example.com', 'password123');
+    const payload = jwtService.verify<{ sub: string; email: string }>(access_token);
+
+    expect(payload.sub).toBe(MOCK_USER_ID);
+    expect(payload.email).toBe('test@example.com');
   });
 
   // BI-AUTH-003
-  test('register duplicate email throws error', () => {
-    authService.register('Олексій', 'oleksiy@example.com', 'pass123');
-    expect(() => {
-      authService.register('Інший', 'oleksiy@example.com', 'pass456');
-    }).toThrow('Email already exists');
+  test('register() throws ConflictException when email already exists', async () => {
+    userRepoMock.findOne.mockResolvedValue(mockUser);
+
+    await expect(authService.register('test@example.com', 'password123'))
+      .rejects.toThrow(ConflictException);
   });
 
   // BI-AUTH-004
-  test('login with wrong password throws error', () => {
-    authService.register('Олексій', 'oleksiy@example.com', 'pass123');
-    expect(() => {
-      authService.login('oleksiy@example.com', 'wrongpass');
-    }).toThrow('Invalid credentials');
+  test('login() returns access_token for valid credentials', async () => {
+    userRepoMock.findOne.mockResolvedValue(mockUser);
+    // bcrypt.compare mocked to true
+
+    const result = await authService.login('test@example.com', 'password123');
+
+    expect(result.access_token).toBeDefined();
+    expect(result.user.email).toBe('test@example.com');
   });
 
   // BI-AUTH-005
-  test('token contains user id', () => {
-    const result = authService.register('Олексій', 'oleksiy@example.com', 'pass123');
-    const userId = authService.validateToken(result.token);
-    expect(userId).toBe(result.userId);
+  test('login() throws UnauthorizedException when user not found', async () => {
+    userRepoMock.findOne.mockResolvedValue(null);
+
+    await expect(authService.login('nobody@example.com', 'password123'))
+      .rejects.toThrow(UnauthorizedException);
   });
 
   // BI-AUTH-006
-  test('invalid token returns null', () => {
-    expect(authService.validateToken('invalid_token')).toBeNull();
-    expect(authService.validateToken('')).toBeNull();
+  test('login() throws UnauthorizedException for wrong password', async () => {
+    const bcrypt = require('bcrypt');
+    userRepoMock.findOne.mockResolvedValue(mockUser);
+    bcrypt.compare.mockResolvedValueOnce(false);
+
+    await expect(authService.login('test@example.com', 'wrongpassword'))
+      .rejects.toThrow(UnauthorizedException);
+  });
+
+  // BI-AUTH-007
+  test('email is lower-cased before repository lookup', async () => {
+    userRepoMock.findOne.mockResolvedValue(null);
+    userRepoMock.save.mockResolvedValue({ ...mockUser, email: 'upper@example.com' });
+
+    await authService.register('UPPER@EXAMPLE.COM', 'password123');
+
+    expect(userRepoMock.findOne).toHaveBeenCalledWith({
+      where: { email: 'upper@example.com' },
+    });
+  });
+
+  // BI-AUTH-008
+  test('login() lower-cases email before lookup', async () => {
+    userRepoMock.findOne.mockResolvedValue(null);
+
+    await expect(authService.login('UPPER@EXAMPLE.COM', 'password123'))
+      .rejects.toThrow(UnauthorizedException);
+
+    expect(userRepoMock.findOne).toHaveBeenCalledWith({
+      where: { email: 'upper@example.com' },
+    });
   });
 });
 
-describe('Integration: Recipe Service + Repository + Cache', () => {
-  let recipeRepo: RecipeRepository;
-  let cache: CacheService;
-  let recipeService: RecipeService;
+/* ═══════ UsersService ═══════════════════════════════════════════════════════ */
 
-  beforeEach(() => {
-    recipeRepo = new RecipeRepository();
-    cache = new CacheService();
-    recipeService = new RecipeService(recipeRepo, cache);
+describe('UsersService', () => {
+  let usersService: UsersService;
+  let userRepoMock: ReturnType<typeof makeUserRepoMock>;
+
+  beforeEach(async () => {
+    userRepoMock = makeUserRepoMock();
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        UsersService,
+        { provide: getRepositoryToken(User), useValue: userRepoMock },
+      ],
+    }).compile();
+
+    usersService = module.get(UsersService);
+  });
+
+  // BI-US-001
+  test('create() hashes password and saves user', async () => {
+    const bcrypt = require('bcrypt');
+    userRepoMock.save.mockResolvedValue(mockUser);
+
+    const user = await usersService.create('test@example.com', 'plainpassword');
+
+    expect(bcrypt.hash).toHaveBeenCalledWith('plainpassword', 10);
+    expect(userRepoMock.save).toHaveBeenCalled();
+    expect(user).toEqual(mockUser);
+  });
+
+  // BI-US-002
+  test('validatePassword() returns true for matching password', async () => {
+    const bcrypt = require('bcrypt');
+    bcrypt.compare.mockResolvedValueOnce(true);
+
+    const result = await usersService.validatePassword(mockUser, 'password123');
+
+    expect(result).toBe(true);
+    expect(bcrypt.compare).toHaveBeenCalledWith('password123', mockUser.passwordHash);
+  });
+
+  // BI-US-003
+  test('validatePassword() returns false for wrong password', async () => {
+    const bcrypt = require('bcrypt');
+    bcrypt.compare.mockResolvedValueOnce(false);
+
+    const result = await usersService.validatePassword(mockUser, 'wrongpassword');
+
+    expect(result).toBe(false);
+  });
+
+  // BI-US-004
+  test('findByEmail() queries with lower-cased email', async () => {
+    userRepoMock.findOne.mockResolvedValue(mockUser);
+
+    await usersService.findByEmail('Test@Example.COM');
+
+    expect(userRepoMock.findOne).toHaveBeenCalledWith({
+      where: { email: 'test@example.com' },
+    });
+  });
+});
+
+/* ═══════ RecipesService ══════════════════════════════════════════════════════ */
+
+describe('RecipesService', () => {
+  let recipesService: RecipesService;
+  let recipeRepoMock: ReturnType<typeof makeRecipeRepoMock>;
+  let reviewRepoMock: ReturnType<typeof makeReviewRepoMock>;
+
+  beforeEach(async () => {
+    recipeRepoMock = makeRecipeRepoMock();
+    reviewRepoMock = makeReviewRepoMock();
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        RecipesService,
+        { provide: getRepositoryToken(Recipe),       useValue: recipeRepoMock },
+        { provide: getRepositoryToken(RecipeReview), useValue: reviewRepoMock },
+      ],
+    }).compile();
+
+    recipesService = module.get(RecipesService);
   });
 
   // BI-REC-001
-  test('generate saves recipe to DB and cache', () => {
-    const recipe = recipeService.generate('user1', ['Яйця', 'Шпинат'], 'breakfast', 15, 2);
-    expect(recipe.id).toBeDefined();
-    expect(recipeRepo.count()).toBe(1);
-    expect(cache.size()).toBe(1);
+  test('generateAndSave() returns RecipePageResponse with required shape', async () => {
+    recipeRepoMock.save.mockResolvedValue(mockRecipeEntity);
+    reviewRepoMock.count.mockResolvedValue(0);
+
+    const result = await recipesService.generateAndSave();
+
+    expect(result.id).toBeDefined();
+    expect(result.title).toBeDefined();
+    expect(result.meta).toBeDefined();
+    expect(result.meta.caloriesLabel).toContain('ккал');
+    expect(result.ingredients).toBeInstanceOf(Array);
+    expect(result.steps).toBeInstanceOf(Array);
+    expect(result.nutritionPerServing.calories).toBeGreaterThan(0);
+    expect(result.reviews.count).toBe(0);
+    expect(result.isAiGenerated).toBe(true);
   });
 
   // BI-REC-002
-  test('getById returns from cache on second call', () => {
-    const recipe = recipeService.generate('user1', ['Яйця'], 'breakfast', 15, 2);
-    const fetched = recipeService.getById(recipe.id);
-    expect(fetched).toBeDefined();
-    expect(fetched!.fromCache).toBe(true);
+  test('findById() returns RecipePageResponse for existing recipe', async () => {
+    recipeRepoMock.findOne.mockResolvedValue(mockRecipeEntity);
+    reviewRepoMock.count.mockResolvedValue(0);
+
+    const result = await recipesService.findById(MOCK_RECIPE_ID);
+
+    expect(result.id).toBe(MOCK_RECIPE_ID);
+    expect(result.title).toBe('Шпинатна яєчня');
+    expect(result.meta.servings).toBe(2);
   });
 
   // BI-REC-003
-  test('getById falls back to DB if cache miss', () => {
-    const recipe = recipeService.generate('user1', ['Яйця'], 'breakfast', 15, 2);
-    cache.invalidate(`recipe_${recipe.id}`);
-    const fetched = recipeService.getById(recipe.id);
-    expect(fetched).toBeDefined();
-    expect(fetched!.fromCache).toBe(false);
+  test('findById() calculates average rating from query builder', async () => {
+    recipeRepoMock.findOne.mockResolvedValue(mockRecipeEntity);
+    reviewRepoMock.count.mockResolvedValue(3);
+    reviewRepoMock.queryBuilder.getRawOne.mockResolvedValue({ avg: '4.3' });
+
+    const result = await recipesService.findById(MOCK_RECIPE_ID);
+
+    expect(result.reviews.count).toBe(3);
+    expect(result.meta.rating).toBe(4.3);
   });
 
   // BI-REC-004
-  test('getByUserId returns only user recipes', () => {
-    recipeService.generate('user1', ['Яйця'], 'breakfast', 15, 2);
-    recipeService.generate('user1', ['Сир'], 'lunch', 30, 4);
-    recipeService.generate('user2', ['Молоко'], 'dessert', 20, 1);
-    const user1Recipes = recipeService.getByUserId('user1');
-    expect(user1Recipes.length).toBe(2);
+  test('findById() throws NotFoundException when recipe does not exist', async () => {
+    recipeRepoMock.findOne.mockResolvedValue(null);
+
+    await expect(recipesService.findById(MOCK_RECIPE_ID))
+      .rejects.toThrow(NotFoundException);
   });
 
   // BI-REC-005
-  test('generate with empty ingredients throws error', () => {
-    expect(() => {
-      recipeService.generate('user1', [], 'breakfast', 15, 2);
-    }).toThrow('No ingredients');
+  test('toResponse() maps entity fields correctly', () => {
+    const result = recipesService.toResponse(mockRecipeEntity, { count: 5, average: 4.8 });
+
+    expect(result.id).toBe(MOCK_RECIPE_ID);
+    expect(result.meta.caloriesLabel).toBe('320 ккал');
+    expect(result.meta.servings).toBe(2);
+    expect(result.meta.rating).toBe(4.8);
+    expect(result.nutritionPerServing.calories).toBe(320);
+    expect(result.nutritionPerServing.proteinG).toBe(22);
+    expect(result.nutritionPerServing.fatG).toBe(24);
+    expect(result.nutritionPerServing.carbsG).toBe(6);
+    expect(result.reviews.count).toBe(5);
+    expect(result.banner).toEqual({ type: 'emoji', value: '🥚' });
   });
 
   // BI-REC-006
-  test('getById for non-existent recipe returns null', () => {
-    const result = recipeService.getById('non-existent');
-    expect(result).toBeNull();
-  });
-});
+  test('createReview() saves review and returns ReviewItemResponse', async () => {
+    const savedReview = {
+      id: 'review-uuid',
+      rating: 5,
+      body: 'Смачно!',
+      user: mockUser,
+      recipe: mockRecipeEntity,
+      createdAt: new Date('2024-06-01'),
+    } as unknown as RecipeReview;
 
-describe('Integration: Full User Journey', () => {
-  let userRepo: UserRepository;
-  let authService: AuthService;
-  let recipeRepo: RecipeRepository;
-  let cache: CacheService;
-  let recipeService: RecipeService;
+    recipeRepoMock.findOne.mockResolvedValue(mockRecipeEntity);
+    reviewRepoMock.findOne.mockResolvedValueOnce(null);
+    reviewRepoMock.create.mockReturnValue(savedReview);
+    reviewRepoMock.save.mockResolvedValue(savedReview);
+    reviewRepoMock.findOneOrFail.mockResolvedValue(savedReview);
 
-  beforeEach(() => {
-    userRepo = new UserRepository();
-    authService = new AuthService(userRepo);
-    recipeRepo = new RecipeRepository();
-    cache = new CacheService();
-    recipeService = new RecipeService(recipeRepo, cache);
-  });
-
-  // BI-FLOW-001
-  test('register → generate recipe → retrieve recipe', () => {
-    // Step 1: Register
-    const authResult = authService.register('Марія', 'maria@test.com', 'secure123');
-    expect(authResult.userId).toBeDefined();
-
-    // Step 2: Generate recipe
-    const recipe = recipeService.generate(
-      authResult.userId,
-      ['Яйця', 'Шпинат', 'Сир фета'],
-      'breakfast',
-      15,
-      2
+    const result = await recipesService.createReview(
+      MOCK_RECIPE_ID,
+      { id: MOCK_USER_ID, email: 'test@example.com' },
+      { rating: 5, body: 'Смачно!' },
     );
-    expect(recipe.title).toContain('Яйця');
 
-    // Step 3: Retrieve recipe
-    const fetched = recipeService.getById(recipe.id);
-    expect(fetched).toBeDefined();
-    expect(fetched!.title).toBe(recipe.title);
+    expect(result.rating).toBe(5);
+    expect(result.body).toBe('Смачно!');
+    expect(result.user.id).toBe(MOCK_USER_ID);
+    expect(result.user.email).toBe('test@example.com');
+    expect(result.createdAt).toBeDefined();
   });
 
-  // BI-FLOW-002
-  test('register → generate multiple → list user recipes', () => {
-    const authResult = authService.register('Петро', 'petro@test.com', 'secure456');
+  // BI-REC-007
+  test('createReview() trims whitespace-only body to null', async () => {
+    const savedReview = {
+      id: 'review-uuid', rating: 4, body: null, user: mockUser,
+      recipe: mockRecipeEntity, createdAt: new Date(),
+    } as unknown as RecipeReview;
 
-    recipeService.generate(authResult.userId, ['Яйця'], 'breakfast', 10, 1);
-    recipeService.generate(authResult.userId, ['Молоко', 'Борошно'], 'dessert', 30, 4);
-    recipeService.generate(authResult.userId, ['Курка', 'Рис'], 'dinner', 45, 2);
+    recipeRepoMock.findOne.mockResolvedValue(mockRecipeEntity);
+    reviewRepoMock.findOne.mockResolvedValueOnce(null);
+    reviewRepoMock.create.mockReturnValue(savedReview);
+    reviewRepoMock.save.mockResolvedValue(savedReview);
+    reviewRepoMock.findOneOrFail.mockResolvedValue(savedReview);
 
-    const userRecipes = recipeService.getByUserId(authResult.userId);
-    expect(userRecipes.length).toBe(3);
+    const result = await recipesService.createReview(
+      MOCK_RECIPE_ID,
+      { id: MOCK_USER_ID, email: 'test@example.com' },
+      { rating: 4, body: '   ' },
+    );
+
+    expect(reviewRepoMock.create).toHaveBeenCalledWith(
+      expect.objectContaining({ body: null }),
+    );
+    expect(result.body).toBeNull();
   });
 
-  // BI-FLOW-003
-  test('login → access existing recipes', () => {
-    // Register and generate
-    const reg = authService.register('Олена', 'olena@test.com', 'pass789');
-    recipeService.generate(reg.userId, ['Помідори', 'Огірки'], 'lunch', 20, 2);
+  // BI-REC-008
+  test('createReview() throws ConflictException for duplicate review', async () => {
+    recipeRepoMock.findOne.mockResolvedValue(mockRecipeEntity);
+    reviewRepoMock.findOne.mockResolvedValue({ id: 'existing' } as RecipeReview);
 
-    // Login
-    const loginResult = authService.login('olena@test.com', 'pass789');
-    const userId = authService.validateToken(loginResult.token);
-
-    // Access recipes
-    const recipes = recipeService.getByUserId(userId!);
-    expect(recipes.length).toBe(1);
+    await expect(
+      recipesService.createReview(
+        MOCK_RECIPE_ID,
+        { id: MOCK_USER_ID, email: 'test@example.com' },
+        { rating: 4 },
+      ),
+    ).rejects.toThrow(ConflictException);
   });
 
-  // BI-FLOW-004
-  test('cache invalidation forces DB read', () => {
-    const reg = authService.register('Тест', 'test@test.com', 'test1234');
-    const recipe = recipeService.generate(reg.userId, ['Яйця'], 'breakfast', 10, 1);
+  // BI-REC-009
+  test('createReview() throws NotFoundException when recipe missing', async () => {
+    recipeRepoMock.findOne.mockResolvedValue(null);
 
-    // First read — from cache
-    const cached = recipeService.getById(recipe.id);
-    expect(cached!.fromCache).toBe(true);
+    await expect(
+      recipesService.createReview(
+        MOCK_RECIPE_ID,
+        { id: MOCK_USER_ID, email: 'test@example.com' },
+        { rating: 3 },
+      ),
+    ).rejects.toThrow(NotFoundException);
+  });
 
-    // Invalidate cache
-    cache.invalidate(`recipe_${recipe.id}`);
+  // BI-REC-010
+  test('listReviews() returns count and mapped items', async () => {
+    const reviewRow = {
+      id: 'review-1', rating: 4, body: 'Good',
+      user: mockUser, recipe: mockRecipeEntity, createdAt: new Date(),
+    } as unknown as RecipeReview;
 
-    // Second read — from DB
-    const fromDb = recipeService.getById(recipe.id);
-    expect(fromDb!.fromCache).toBe(false);
+    recipeRepoMock.count.mockResolvedValue(1);
+    reviewRepoMock.findAndCount.mockResolvedValue([[reviewRow], 1]);
 
-    // Third read — cached again
-    const cachedAgain = recipeService.getById(recipe.id);
-    expect(cachedAgain!.fromCache).toBe(true);
+    const result = await recipesService.listReviews(MOCK_RECIPE_ID, { limit: 20, offset: 0 });
+
+    expect(result.count).toBe(1);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].rating).toBe(4);
+    expect(result.items[0].user.email).toBe('test@example.com');
+  });
+
+  // BI-REC-011
+  test('listReviews() throws NotFoundException when recipe missing', async () => {
+    recipeRepoMock.count.mockResolvedValue(0);
+
+    await expect(
+      recipesService.listReviews(MOCK_RECIPE_ID, { limit: 20, offset: 0 }),
+    ).rejects.toThrow(NotFoundException);
   });
 });
-

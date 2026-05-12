@@ -6,3 +6,7 @@ playwright-report/
 .cache/
 *.log
 
+# Jest JUnit reports (generated in CI, should not be committed)
+junit.xml
+*.junit.xml
+

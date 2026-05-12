@@ -2,7 +2,7 @@
  * Unit Tests — Profile Page
  * Тести сторінки профілю (ProfilePage)
  */
-import React from 'react';
+import React, { act } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ProfilePage from '../../../UI_prototype/src/pages/Profile';
@@ -32,10 +32,11 @@ describe('Profile Page', () => {
 
   // UT-PR-003
   test('renders profile stats', () => {
-    renderProfile();
-    expect(screen.getByText('47')).toBeInTheDocument();
-    expect(screen.getByText('12')).toBeInTheDocument();
-    expect(screen.getByText('8')).toBeInTheDocument();
+    const { container } = renderProfile();
+    const statsHeader = container.querySelector('.profile__stats')!;
+    expect(statsHeader.textContent).toContain('47');
+    expect(statsHeader.textContent).toContain('12');
+    expect(statsHeader.textContent).toContain('8');
   });
 
   // UT-PR-004
@@ -83,9 +84,7 @@ describe('Profile Page', () => {
     // Find all toggle buttons (switches)
     const switches = screen.getAllByRole('switch');
     expect(switches.length).toBeGreaterThan(0);
-    // Click first toggle
-    await user.click(switches[0]);
-    // Toggle should still be in the document (state changed)
+    await act(async () => { await user.click(switches[0]); });
     expect(switches[0]).toBeInTheDocument();
   });
 
