@@ -138,7 +138,7 @@ jobs:
           echo "**URL:** ${{ steps.get-url.outputs.url }}  **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
 
   # ──────────────────────────────────────────────────────────
-  # Step 1: read ACTIVE_SLOT from Cloudflare KV
+  # Step 1: read ACTIVE_SLOT from wrangler.toml [vars]
   # ──────────────────────────────────────────────────────────
   determine-slots:
     name: 🔵🟢 Determine Active / Inactive Slots
@@ -148,48 +148,35 @@ jobs:
       active_slot:   ${{ steps.resolve.outputs.active_slot }}
       inactive_slot: ${{ steps.resolve.outputs.inactive_slot }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: "🔍 Secrets check"
         run: |
           echo "=== SECRETS LENGTH CHECK ==="
-          echo "RENDER_API_KEY            : ${#RK} chars"
-          echo "RENDER_BLUE_SERVICE_ID    : ${#BLUE} chars"
-          echo "RENDER_GREEN_SERVICE_ID   : ${#GREEN} chars"
-          echo "CLOUDFLARE_API_TOKEN      : ${#CF_TOKEN} chars"
-          echo "CLOUDFLARE_ACCOUNT_ID     : ${#CF_ACCOUNT} chars"
-          echo "CLOUDFLARE_KV_NAMESPACE_ID: ${#CF_KV} chars"
-          [ -z "$RK" ]         && echo "❌ RENDER_API_KEY is EMPTY"              || echo "✓ RENDER_API_KEY"
-          [ -z "$BLUE" ]       && echo "❌ RENDER_BLUE_SERVICE_ID is EMPTY"      || echo "✓ RENDER_BLUE_SERVICE_ID"
-          [ -z "$GREEN" ]      && echo "❌ RENDER_GREEN_SERVICE_ID is EMPTY"     || echo "✓ RENDER_GREEN_SERVICE_ID"
-          [ -z "$CF_TOKEN" ]   && echo "❌ CLOUDFLARE_API_TOKEN is EMPTY"        || echo "✓ CLOUDFLARE_API_TOKEN"
-          [ -z "$CF_ACCOUNT" ] && echo "❌ CLOUDFLARE_ACCOUNT_ID is EMPTY"      || echo "✓ CLOUDFLARE_ACCOUNT_ID"
-          [ -z "$CF_KV" ]      && echo "❌ CLOUDFLARE_KV_NAMESPACE_ID is EMPTY" || echo "✓ CLOUDFLARE_KV_NAMESPACE_ID"
+          echo "RENDER_API_KEY         : ${#RK} chars"
+          echo "RENDER_BLUE_SERVICE_ID : ${#BLUE} chars"
+          echo "RENDER_GREEN_SERVICE_ID: ${#GREEN} chars"
+          echo "CLOUDFLARE_API_TOKEN   : ${#CF_TOKEN} chars"
+          echo "CLOUDFLARE_ACCOUNT_ID  : ${#CF_ACCOUNT} chars"
+          [ -z "$RK" ]       && echo "❌ RENDER_API_KEY is EMPTY"            || echo "✓ RENDER_API_KEY"
+          [ -z "$BLUE" ]     && echo "❌ RENDER_BLUE_SERVICE_ID is EMPTY"    || echo "✓ RENDER_BLUE_SERVICE_ID"
+          [ -z "$GREEN" ]    && echo "❌ RENDER_GREEN_SERVICE_ID is EMPTY"   || echo "✓ RENDER_GREEN_SERVICE_ID"
+          [ -z "$CF_TOKEN" ] && echo "❌ CLOUDFLARE_API_TOKEN is EMPTY"      || echo "✓ CLOUDFLARE_API_TOKEN"
+          [ -z "$CF_ACCOUNT" ] && echo "❌ CLOUDFLARE_ACCOUNT_ID is EMPTY"  || echo "✓ CLOUDFLARE_ACCOUNT_ID"
         env:
           RK:         ${{ secrets.RENDER_API_KEY }}
           BLUE:       ${{ secrets.RENDER_BLUE_SERVICE_ID }}
           GREEN:      ${{ secrets.RENDER_GREEN_SERVICE_ID }}
           CF_TOKEN:   ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CF_KV:      ${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}
 
-      - name: Read ACTIVE_SLOT from Cloudflare KV
+      - name: Read ACTIVE_SLOT from wrangler.toml
         id: resolve
         run: |
-          echo "=== READING ACTIVE_SLOT FROM CLOUDFLARE KV ==="
-          KV_URL="${{ env.CF_API }}/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}/values/ACTIVE_SLOT"
-          echo "KV URL: $KV_URL"
-
-          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" "$KV_URL" \
-            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}")
-
-          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
-          ACTIVE=$(echo "$RESPONSE" | grep -v "HTTP_STATUS")
-          echo "KV response status : $HTTP_STATUS"
-          echo "KV response body   : $ACTIVE"
-
-          if [ "$HTTP_STATUS" != "200" ] || [ -z "$ACTIVE" ] || [ "$ACTIVE" = "null" ]; then
-            echo "⚠️  KV read failed (HTTP $HTTP_STATUS) — defaulting to blue"
-            ACTIVE="blue"
-          fi
+          echo "=== READING ACTIVE_SLOT FROM wrangler.toml ==="
+          ACTIVE=$(grep 'ACTIVE_SLOT' cloudflare-worker/wrangler.toml | head -1 | cut -d'"' -f2)
+          [ -z "$ACTIVE" ] && ACTIVE="blue"
           echo "Resolved ACTIVE_SLOT: $ACTIVE"
 
           if [ "$ACTIVE" = "green" ]; then
@@ -324,69 +311,21 @@ jobs:
     runs-on: ubuntu-latest
     needs: [determine-slots, deploy-inactive-slot]
     steps:
-      - name: "🔍 Cloudflare secrets check"
-        run: |
-          echo "=== CLOUDFLARE SECRETS LENGTH CHECK ==="
-          echo "CLOUDFLARE_API_TOKEN      : ${#CF_TOKEN} chars"
-          echo "CLOUDFLARE_ACCOUNT_ID     : ${#CF_ACCOUNT} chars"
-          echo "CLOUDFLARE_KV_NAMESPACE_ID: ${#CF_KV} chars"
-          [ -z "$CF_TOKEN" ]   && echo "❌ CLOUDFLARE_API_TOKEN is EMPTY"        || echo "✓ CLOUDFLARE_API_TOKEN set"
-          [ -z "$CF_ACCOUNT" ] && echo "❌ CLOUDFLARE_ACCOUNT_ID is EMPTY"       || echo "✓ CLOUDFLARE_ACCOUNT_ID set"
-          [ -z "$CF_KV" ]      && echo "❌ CLOUDFLARE_KV_NAMESPACE_ID is EMPTY"  || echo "✓ CLOUDFLARE_KV_NAMESPACE_ID set"
-        env:
-          CF_TOKEN:   ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CF_KV:      ${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: "🔍 Verify token and account"
-        run: |
-          echo "=== STEP 1: VERIFY TOKEN ==="
-          RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
-            "https://api.cloudflare.com/client/v4/user/tokens/verify" \
-            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}")
-          HTTP=$(echo "$RESP" | grep "HTTP_STATUS" | cut -d: -f2)
-          BODY=$(echo "$RESP" | grep -v "HTTP_STATUS")
-          echo "Token verify HTTP: $HTTP"
-          echo "Token verify body: $BODY"
-          [ "$HTTP" != "200" ] && echo "❌ Token invalid" && exit 1
-
-          echo ""
-          echo "=== STEP 2: LIST ACCOUNTS FOR THIS TOKEN ==="
-          RESP2=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
-            "https://api.cloudflare.com/client/v4/accounts" \
-            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}")
-          HTTP2=$(echo "$RESP2" | grep "HTTP_STATUS" | cut -d: -f2)
-          BODY2=$(echo "$RESP2" | grep -v "HTTP_STATUS")
-          echo "Accounts HTTP: $HTTP2"
-          echo "Accounts body: $BODY2"
-
-          echo ""
-          echo "=== STEP 3: CHECK IF ACCOUNT_ID MATCHES ==="
-          FOUND=$(echo "$BODY2" | grep -o "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" || true)
-          if [ -z "$FOUND" ]; then
-            echo "❌ CLOUDFLARE_ACCOUNT_ID not found in token's account list"
-            echo "   The account ID in GitHub Secrets doesn't match this token"
-          else
-            echo "✓ Account ID confirmed in token's accounts"
-          fi
-
-      - name: Write new ACTIVE_SLOT to Cloudflare KV
+      - name: "🔀 Redeploy Worker with new ACTIVE_SLOT=${{ needs.determine-slots.outputs.inactive_slot }}"
         run: |
           NEW_SLOT="${{ needs.determine-slots.outputs.inactive_slot }}"
-          echo "=== SWITCHING TRAFFIC: ACTIVE_SLOT → $NEW_SLOT ==="
-          KV_URL="${{ env.CF_API }}/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}/values/ACTIVE_SLOT"
-          echo "KV URL: $KV_URL"
-
-          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT "$KV_URL" \
-            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
-            -H "Content-Type: text/plain" \
-            -d "$NEW_SLOT")
-          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
-          BODY=$(echo "$RESPONSE" | grep -v "HTTP_STATUS")
-          echo "KV write status: $HTTP_STATUS"
-          echo "KV write body  : $BODY"
-          [ "$HTTP_STATUS" != "200" ] && echo "❌ KV write failed" && exit 1
-          echo "✓ ACTIVE_SLOT → $NEW_SLOT"
+          echo "=== SWITCHING TRAFFIC: redeploying Worker with ACTIVE_SLOT=$NEW_SLOT ==="
+          npx wrangler@3 deploy \
+            --var ACTIVE_SLOT:"$NEW_SLOT" \
+            --compatibility-date 2024-09-23 \
+            --name recipeai-router
+        working-directory: cloudflare-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Post-switch smoke test
         run: |
@@ -427,17 +366,22 @@ jobs:
     needs: [determine-slots, switch-traffic]
     if: always() && needs.determine-slots.result == 'success' && needs.switch-traffic.result == 'failure'
     steps:
-      - name: Revert KV ACTIVE_SLOT
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Revert Worker to previous slot
         run: |
           PREV_SLOT="${{ needs.determine-slots.outputs.active_slot }}"
-          echo "=== AUTO-ROLLBACK: reverting ACTIVE_SLOT → $PREV_SLOT ==="
-          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT \
-            "${{ env.CF_API }}/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}/values/ACTIVE_SLOT" \
-            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
-            -d "$PREV_SLOT")
-          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
-          echo "KV revert status: $HTTP_STATUS"
-          echo "⏪ ACTIVE_SLOT reverted to $PREV_SLOT"
+          echo "=== AUTO-ROLLBACK: reverting Worker ACTIVE_SLOT → $PREV_SLOT ==="
+          npx wrangler@3 deploy \
+            --var ACTIVE_SLOT:"$PREV_SLOT" \
+            --compatibility-date 2024-09-23 \
+            --name recipeai-router
+          echo "⏪ Worker reverted to $PREV_SLOT"
+        working-directory: cloudflare-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
   # ──────────────────────────────────────────────────────────
   # MANUAL ROLLBACK — workflow_dispatch action=rollback
@@ -447,33 +391,25 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' && inputs.action == 'rollback'
     steps:
-      - name: "🔍 Secrets check"
-        run: |
-          echo "=== SECRETS LENGTH CHECK ==="
-          [ -z "$CF_TOKEN" ]   && echo "❌ CLOUDFLARE_API_TOKEN is EMPTY"        || echo "✓ CLOUDFLARE_API_TOKEN"
-          [ -z "$CF_ACCOUNT" ] && echo "❌ CLOUDFLARE_ACCOUNT_ID is EMPTY"      || echo "✓ CLOUDFLARE_ACCOUNT_ID"
-          [ -z "$CF_KV" ]      && echo "❌ CLOUDFLARE_KV_NAMESPACE_ID is EMPTY" || echo "✓ CLOUDFLARE_KV_NAMESPACE_ID"
-        env:
-          CF_TOKEN:   ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CF_KV:      ${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Read current ACTIVE_SLOT and determine target
+      - name: Read current Worker ACTIVE_SLOT
         id: resolve
         run: |
-          echo "=== READING CURRENT ACTIVE_SLOT ==="
-          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
-            "${{ env.CF_API }}/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}/values/ACTIVE_SLOT" \
-            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}")
-          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
-          CURRENT=$(echo "$RESPONSE" | grep -v "HTTP_STATUS")
-          echo "KV status : $HTTP_STATUS"
-          echo "KV current: $CURRENT"
-          [ "$HTTP_STATUS" != "200" ] || [ -z "$CURRENT" ] && CURRENT="blue"
-
+          echo "=== READING CURRENT ACTIVE_SLOT FROM WORKER ENV ==="
+          CURRENT=$(npx wrangler@3 secret list --name recipeai-router 2>/dev/null \
+            | jq -r '.[] | select(.name=="ACTIVE_SLOT") | .name' || echo "")
+          # Fall back: read from wrangler.toml [vars]
+          CURRENT=$(grep 'ACTIVE_SLOT' cloudflare-worker/wrangler.toml | head -1 | cut -d'"' -f2)
+          [ -z "$CURRENT" ] && CURRENT="blue"
+          echo "Current ACTIVE_SLOT: $CURRENT"
           if [ "$CURRENT" = "green" ]; then TARGET="blue"; else TARGET="green"; fi
           echo "Rolling back from $CURRENT → $TARGET"
           echo "target_slot=$TARGET" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Smoke test rollback target
         run: |
@@ -484,7 +420,7 @@ jobs:
             SVC_ID="${{ secrets.RENDER_BLUE_SERVICE_ID }}"
           fi
           echo "=== SMOKE TEST ON ROLLBACK TARGET ($TARGET) ==="
-          [ -z "$SVC_ID" ] && echo "❌ Service ID empty for target slot $TARGET" && exit 1
+          [ -z "$SVC_ID" ] && echo "❌ Service ID empty for $TARGET" && exit 1
           BASE_URL=$(curl -s "${{ env.RENDER_API }}/services/$SVC_ID" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" | jq -r '.serviceDetails.url')
           echo "Target URL: $BASE_URL"
@@ -493,18 +429,19 @@ jobs:
           [ "$STATUS" != "200" ] && echo "❌ Rollback target unhealthy" && exit 1
           echo "✓ Rollback target /health → 200"
 
-      - name: Switch KV to rollback target
+      - name: Redeploy Worker with rollback slot
         run: |
           TARGET="${{ steps.resolve.outputs.target_slot }}"
-          echo "=== SWITCHING ACTIVE_SLOT → $TARGET ==="
-          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT \
-            "${{ env.CF_API }}/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}/values/ACTIVE_SLOT" \
-            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
-            -d "$TARGET")
-          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
-          echo "KV write status: $HTTP_STATUS"
-          [ "$HTTP_STATUS" != "200" ] && echo "❌ KV write failed" && exit 1
+          echo "=== REDEPLOYING WORKER WITH ACTIVE_SLOT=$TARGET ==="
+          npx wrangler@3 deploy \
+            --var ACTIVE_SLOT:"$TARGET" \
+            --compatibility-date 2024-09-23 \
+            --name recipeai-router
           echo "✓ ACTIVE_SLOT → $TARGET"
+        working-directory: cloudflare-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Summary
         run: |
