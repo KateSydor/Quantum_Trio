@@ -120,11 +120,19 @@ jobs:
       - name: Read ACTIVE_SLOT from Cloudflare KV
         id: resolve
         run: |
-          ACTIVE=$(curl -sf \
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
             "${{ env.CF_API }}/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}/values/ACTIVE_SLOT" \
             -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}")
 
-          [ -z "$ACTIVE" ] || [ "$ACTIVE" = "null" ] && ACTIVE="blue"
+          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
+          ACTIVE=$(echo "$RESPONSE" | grep -v "HTTP_STATUS")
+          echo "KV response status: $HTTP_STATUS"
+          echo "KV response body: $ACTIVE"
+
+          if [ "$HTTP_STATUS" != "200" ] || [ -z "$ACTIVE" ] || [ "$ACTIVE" = "null" ]; then
+            echo "KV read failed (HTTP $HTTP_STATUS) — defaulting to blue"
+            ACTIVE="blue"
+          fi
           echo "KV ACTIVE_SLOT: $ACTIVE"
 
           if [ "$ACTIVE" = "green" ]; then
@@ -284,10 +292,12 @@ jobs:
       - name: Read current ACTIVE_SLOT and determine rollback target
         id: resolve
         run: |
-          CURRENT=$(curl -sf \
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
             "${{ env.CF_API }}/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}/values/ACTIVE_SLOT" \
             -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}")
-          [ -z "$CURRENT" ] || [ "$CURRENT" = "null" ] && CURRENT="blue"
+          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
+          CURRENT=$(echo "$RESPONSE" | grep -v "HTTP_STATUS")
+          [ "$HTTP_STATUS" != "200" ] || [ -z "$CURRENT" ] || [ "$CURRENT" = "null" ] && CURRENT="blue"
 
           if [ "$CURRENT" = "green" ]; then
             TARGET="blue"; TARGET_ID="${{ secrets.RENDER_BLUE_SERVICE_ID }}"
