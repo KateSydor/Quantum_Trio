@@ -314,18 +314,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: "🔀 Redeploy Worker with new ACTIVE_SLOT=${{ needs.determine-slots.outputs.inactive_slot }}"
+      # Traffic switch is done MANUALLY before triggering this workflow:
+      # Cloudflare Worker dashboard → Settings → Variables → ACTIVE_SLOT → set to inactive slot value
+      - name: "🔀 Traffic switch — manual step reminder"
         run: |
           NEW_SLOT="${{ needs.determine-slots.outputs.inactive_slot }}"
-          echo "=== SWITCHING TRAFFIC: redeploying Worker with ACTIVE_SLOT=$NEW_SLOT ==="
-          npx wrangler@3 deploy \
-            --var ACTIVE_SLOT:"$NEW_SLOT" \
-            --compatibility-date 2024-09-23 \
-            --name recipeai-router
-        working-directory: cloudflare-worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          echo "⚠️  MANUAL STEP REQUIRED:"
+          echo "    Cloudflare Worker dashboard → Settings → Variables → ACTIVE_SLOT = $NEW_SLOT"
+          echo "    https://dash.cloudflare.com/763007be1348a892b2ff24a95eacdafb/workers/services/view/recipeai-router/production/settings/bindings"
+          echo "Assuming traffic is already switched to: $NEW_SLOT"
 
       - name: Post-switch smoke test
         run: |
