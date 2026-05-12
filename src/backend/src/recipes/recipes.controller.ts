@@ -45,10 +45,8 @@ export class RecipesController {
   })
   @ApiCreatedResponse({ type: RecipePageResponseDto })
   async generate() {
-    this.logger.log('POST /generate — generating recipe');
-    const result = await this.recipes.generateAndSave();
-    this.logger.log(`POST /generate — saved recipe id=${result.id}`);
-    return result;
+    this.logger.log('POST /generate');
+    return this.recipes.generateAndSave();
   }
 
   @Get('recipes/:id')
@@ -87,9 +85,7 @@ export class RecipesController {
     @Req() req: { user: { id: string; email: string } },
     @Body() dto: CreateReviewDto,
   ) {
-    this.logger.log(
-      `POST /recipes/${id}/reviews — user=${req.user.email} rating=${dto.rating}`,
-    );
+    this.logger.log(`POST /recipes/${id}/reviews`);
     return this.recipes.createReview(id, req.user, dto);
   }
 }
