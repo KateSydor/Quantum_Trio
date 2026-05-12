@@ -35,7 +35,14 @@ import { UsersModule } from './users/users.module';
         if (db.url) {
           return { ...base, url: db.url };
         }
-        return { ...base, host: db.host, port: db.port, username: db.username, password: db.password, database: db.name };
+        return {
+          ...base,
+          host: db.host,
+          port: db.port,
+          username: db.username,
+          password: db.password,
+          database: db.name,
+        };
       },
     }),
     ServeStaticModule.forRoot({
