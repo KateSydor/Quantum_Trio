@@ -2,40 +2,52 @@
 
 ## Overview
 
-RecipeAI uses a **Blue-Green deployment strategy** on **Render.com** with two permanent environments: `staging` and `production`. Every code change is automatically deployed to staging first, smoke-tested, and only then promoted to production.
+RecipeAI uses a **Blue-Green deployment strategy** on **Render.com**, with a separate staging environment acting as a mandatory QA gate. All deploys are orchestrated by GitHub Actions; Render's `autoDeploy` is disabled on every service. Traffic switching between production slots is controlled by a **Cloudflare Worker** reading a KV store key.
 
 ---
 
 ## Architecture
 
-```
-GitHub Repository
-└── main branch  ──→  Staging  (every push)
-                 ──→  Production  (every release tag from release-please)
+```mermaid
+flowchart TD
+    A[Push to main] --> CI[CI Pipeline\nBuild · Lint · Unit · Integration · API · Coverage]
+    CI -->|fail| FAIL[Pipeline blocked]
+    CI -->|pass| EVT{Trigger type}
+
+    EVT -->|push| S_DEPLOY[Deploy recipeai-staging]
+    EVT -->|release published| P_DEPLOY[Deploy inactive slot\nrecipeai-blue or recipeai-green]
+
+    S_DEPLOY --> S_POLL[Poll Render API\nuntil live — 10 min timeout]
+    P_DEPLOY --> P_POLL[Poll Render API\nuntil live — 10 min timeout]
+
+    S_POLL -->|live| S_SMOKE[Smoke tests\nGET /health · GET /docs]
+    P_POLL -->|live| P_SMOKE[Smoke tests\nGET /health · GET /docs]
+
+    S_SMOKE -->|pass| S_OK[✅ Staging live]
+    S_SMOKE -->|fail| S_RB[Auto-rollback via Render API]
+
+    P_SMOKE -->|pass| KV[Cloudflare Worker KV\nSwitch active slot]
+    P_SMOKE -->|fail| P_RB[Auto-rollback via Render API]
+
+    KV --> P_OK[✅ Production live]
 ```
 
-### Full Pipeline Flow
+---
 
-```
-Code push to main
-  │
-  ├─ CI (ci-tests.yml)
-  │    Build & Lint → Unit Tests → Integration Tests → API Tests → Coverage
-  │
-  └─ CD (deploy.yml)
-       │
-       ├─ push → 🟦 Deploy Staging
-       │            ├─ Trigger Render build (Docker image)
-       │            ├─ Poll until status = "live" (max 10 min)
-       │            ├─ Smoke tests: GET /health, GET /docs
-       │            └─ On failure: automatic rollback to previous live deploy
-       │
-       └─ release published → 🟩 Deploy Production
-                                 ├─ Trigger Render build (Docker image)
-                                 ├─ Poll until status = "live" (max 10 min)
-                                 ├─ Smoke tests: GET /health, GET /docs
-                                 └─ On failure: automatic rollback to previous live deploy
-```
+## Services
+
+All services are defined in [`render.yaml`](../render.yaml) and provisioned as a Render Blueprint.
+
+| Service | Role | Plan |
+|---|---|---|
+| `recipeai-staging` | QA gate — receives every push to `main` | free |
+| `recipeai-blue` | Production blue slot | free |
+| `recipeai-green` | Production green slot | free |
+| `recipeai-staging-db` | Staging PostgreSQL | free |
+| `recipeai-production-db` | Production PostgreSQL — shared by both slots | free |
+| `recipeai-production-secrets` | Env-var group shared by blue and green | — |
+
+Blue and green slots share `recipeai-production-db` and `recipeai-production-secrets` so that JWT tokens remain valid across slot switches.
 
 ---
 
@@ -43,118 +55,134 @@ Code push to main
 
 | | Staging | Production |
 |---|---|---|
-| **Branch** | `main` | `main` |
-| **Render service** | `recipeai-staging` | `recipeai-production` |
+| **Render services** | `recipeai-staging` | `recipeai-blue`, `recipeai-green` |
 | **Database** | `recipeai-staging-db` | `recipeai-production-db` |
-| **DB_SYNCHRONIZE** | `true` (auto-migrate) | `false` (manual migrations) |
-| **URL** | Assigned by Render | Assigned by Render |
-| **Deploy trigger** | Every push to `main` | Every release tag (release-please) |
+| **DB_SYNCHRONIZE** | `true` — schema auto-migrated | `false` — manual migrations only |
+| **NODE_ENV** | `staging` | `production` |
+| **Deploy trigger** | Every push to `main` | Every published GitHub release (release-please) |
 
 ---
 
-## Required GitHub Secrets
+## Deployment Triggers
 
-Go to **Settings → Secrets and variables → Actions** in the GitHub repository and add:
+| Event | Target |
+|---|---|
+| Push to `main` | `recipeai-staging` |
+| GitHub Release published (release tag) | Inactive production slot (blue or green) |
+| Manual workflow dispatch | Any environment, any time |
 
-| Secret | How to get it |
-|--------|--------------|
-| `RENDER_API_KEY` | Render Dashboard → Account Settings → API Keys → Create API Key |
-| `RENDER_STAGING_SERVICE_ID` | Render Dashboard → select `recipeai-staging` service → copy the `srv-...` ID from the URL |
-| `RENDER_PRODUCTION_SERVICE_ID` | Render Dashboard → select `recipeai-production` service → copy the `srv-...` ID from the URL |
-
----
-
-## First-Time Setup on Render.com
-
-1. Create a Render account at [render.com](https://render.com)
-2. Connect your GitHub repository
-3. Click **New → Blueprint** and select the repository root — Render will detect `render.yaml` and create all services automatically
-4. After services are created, copy the Service IDs and add them to GitHub Secrets (see above)
-5. Generate an API Key in Render Account Settings and add it as `RENDER_API_KEY`
+Render's `autoDeploy: false` is set on all services. GitHub Actions is the sole authority that initiates builds.
 
 ---
 
-## How Deployments Work
+## Pipeline Stages
 
-### Automatic (normal flow)
+### CI (`ci-tests.yml`)
 
-| Push to | Result |
-|---------|--------|
-| `develop` | Staging deploys automatically, smoke tests run |
-| `main` | Production deploys automatically, smoke tests run |
+Runs on every push. Stages run sequentially and must all pass before the CD job proceeds:
 
-### Smoke Tests
+1. **Build & Lint** — TypeScript compilation + ESLint
+2. **Unit Tests** — Jest, isolated modules
+3. **Integration Tests** — Jest against a real PostgreSQL instance
+4. **API Tests** — end-to-end HTTP against the running service
+5. **Coverage** — threshold enforcement
 
-After every deploy the pipeline runs:
+### CD (`deploy.yml`)
 
-```bash
-GET /health   → must return HTTP 200
-GET /docs     → must return HTTP 200/301/302
-```
+Runs after CI passes. The active job depends on the trigger type:
 
-If either test fails, the rollback procedure starts automatically.
+**Staging deploy (every push to `main`)**
+
+1. Render build triggered via API (`POST /v1/services/{id}/deploys`)
+2. Pipeline polls `GET /v1/services/{id}/deploys/{deployId}` until `status = live` or the 10-minute timeout expires
+3. Smoke tests run against the staging URL
+4. On failure: automatic rollback to the previous live deploy
+
+**Production deploy (release published)**
+
+1. The currently inactive slot is identified and targeted
+2. Render build triggered on the inactive slot
+3. Pipeline polls until `status = live` or timeout
+4. Smoke tests run against the inactive slot's URL
+5. On success: Cloudflare Worker KV is updated to point traffic at the newly deployed slot
+6. On failure: automatic rollback; the active slot is never touched
 
 ---
 
-## Rollback Procedure
+## Smoke Tests
 
-### Automatic Rollback (on smoke test failure)
+Executed after every successful Render build:
 
-When smoke tests fail after a deploy, the CD pipeline automatically:
-1. Finds the last deploy with `status = "live"` via Render API
+| Endpoint | Expected response |
+|---|---|
+| `GET /health` | `200 OK` |
+| `GET /docs` | `200`, `301`, or `302` |
+
+A non-matching status code on either endpoint triggers the automatic rollback procedure.
+
+---
+
+## Rollback
+
+### Automatic (smoke test failure)
+
+When smoke tests fail after a deploy, the CD pipeline:
+
+1. Queries the Render API for the previous deploy with `status = live`
 2. Calls `POST /v1/services/{id}/deploys/{deployId}/rollback`
-3. Reports the rollback in the GitHub Actions summary
+3. Records the outcome in the GitHub Actions run summary
 
-No manual intervention is needed.
+The active production slot is unaffected during a production rollback — traffic continues to be served by the slot that was live before the deploy started.
 
-### Manual Rollback (emergency)
+### Manual (emergency)
 
-To manually trigger a rollback at any time:
+A manual rollback can be triggered at any time via **GitHub Actions → RecipeAI — CD → Run workflow**, selecting the target environment. This executes the `manual-rollback` job, which calls the same Render rollback API against the specified service.
 
-1. Go to **GitHub → Actions → RecipeAI — CD**
-2. Click **Run workflow**
-3. Select environment: `staging` or `production`
-4. Click **Run workflow**
-
-This triggers the `manual-rollback` job which rolls back to the previous live deploy.
-
-### Rollback via Render Dashboard
-
-As an alternative:
-1. Go to Render Dashboard → select the service
-2. Click **Deploys** tab
-3. Find the last working deploy
-4. Click **Rollback to this deploy**
+As a secondary option, any deploy can be rolled back directly through the Render Dashboard (**Deploys** tab → **Rollback to this deploy**) without involving GitHub Actions.
 
 ---
 
-## Adding New Environment Variables
+## GitHub Secrets
 
-### For staging only:
-1. Render Dashboard → `recipeai-staging` service → **Environment** tab
-2. Add the variable and click **Save Changes**
-3. Service will redeploy automatically
+The following secrets must be present in the repository for the CD pipeline to function:
 
-### For both environments via `render.yaml`:
-Add to the `envVars` section of the respective service in `render.yaml`, then push to trigger a deploy.
+| Secret | Purpose |
+|---|---|
+| `RENDER_API_KEY` | Authenticates all Render API calls |
+| `RENDER_STAGING_SERVICE_ID` | Identifies the `recipeai-staging` service (`srv-…`) |
+| `RENDER_BLUE_SERVICE_ID` | Identifies the `recipeai-blue` service (`srv-…`) |
+| `RENDER_GREEN_SERVICE_ID` | Identifies the `recipeai-green` service (`srv-…`) |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account for KV writes |
+| `CLOUDFLARE_API_TOKEN` | Token with KV write permission |
+| `CLOUDFLARE_KV_NAMESPACE_ID` | KV namespace that the Worker reads for slot routing |
 
-### As a GitHub Secret (for use in CI/CD only):
-**Settings → Secrets and variables → Actions → New repository secret**
+---
+
+## Configuration
+
+### Environment variables
+
+Service-level environment variables are declared in `render.yaml` under each service's `envVars` block. Variables shared between blue and green are defined in the `recipeai-production-secrets` env-var group.
+
+Variables that must not be committed (credentials, generated values) use `generateValue: true` in `render.yaml` or are injected from GitHub Secrets at deploy time.
+
+### Adding a variable
+
+- **Staging only** — add to `recipeai-staging.envVars` in `render.yaml` and push
+- **Both production slots** — add to the `recipeai-production-secrets` group in `render.yaml`
+- **CI/CD pipeline only** — add as a GitHub Actions secret; it is not visible to the running service
 
 ---
 
 ## Monitoring
 
-### Render Built-in Metrics
-Render Dashboard provides per-service:
-- CPU usage
-- Memory usage
-- Response time
-- Request volume
-- Deploy history
+### Render metrics
 
-### Health Endpoint
-`GET /health` — available on both environments, checks database connectivity:
+The Render Dashboard exposes per-service metrics: CPU, memory, response time, request volume, and full deploy history.
+
+### Health endpoint
+
+`GET /health` — available on both environments; checks database connectivity.
 
 ```json
 {
@@ -165,48 +193,49 @@ Render Dashboard provides per-service:
 }
 ```
 
-Returns `503` if the database is unreachable.
+Returns `503` when the database is unreachable.
 
-### GitHub Actions Summary
-After every deploy, the Actions summary shows:
-- Deploy status (live / failed)
+### GitHub Actions summary
+
+Every CD run produces a summary containing:
+
+- Deploy status (`live` / `failed`)
 - Service URL
 - Commit SHA
 - Smoke test results
-- Rollback info (if triggered)
+- Rollback details (if triggered)
 
 ---
 
 ## Docker Image
 
-The application is packaged as a Docker image using a multi-stage build:
+The application is packaged as a multi-stage Docker image:
 
-```
-Stage 1 (builder):  node:20-alpine
-  - npm ci
-  - nest build → dist/
+| Stage | Base image | Output |
+|---|---|---|
+| `builder` | `node:20-alpine` | `dist/` (compiled NestJS) |
+| `runtime` | `node:20-alpine` | Minimal production image |
 
-Stage 2 (runtime):  node:20-alpine
-  - npm ci --omit=dev
-  - COPY dist/
-  - COPY UI_prototype/ → public/   ← static frontend served by NestJS
-  - USER appuser (non-root)
-  - HEALTHCHECK wget /health
-  - CMD node dist/main
-```
+Runtime stage characteristics:
 
-The frontend (`UI_prototype/`) is served as static files by `ServeStaticModule` at the root path `/`. API routes (`/api`, `/auth`, `/health`, `/docs`) take priority.
+- Production dependencies only (`npm ci --omit=dev`)
+- Static frontend (`UI_prototype/`) copied to `public/` and served by `ServeStaticModule` at `/`
+- Non-root user (`appuser`)
+- `HEALTHCHECK` via `wget /health`
+- Entrypoint: `node dist/main`
+
+API routes (`/api`, `/auth`, `/health`, `/docs`) take priority over static file serving.
 
 ---
 
-## Conventional Commits → Releases
+## Release Process
 
-Semantic versioning is handled automatically by `release-please` (see `release.yml`):
+Semantic versioning is managed automatically by `release-please` (`release.yml`):
 
 | Commit prefix | Version bump |
 |---|---|
-| `feat:` | minor (1.x.0) |
-| `fix:` | patch (1.0.x) |
-| `feat!:` or `BREAKING CHANGE:` | major (x.0.0) |
+| `feat:` | minor — `1.x.0` |
+| `fix:` | patch — `1.0.x` |
+| `feat!:` or `BREAKING CHANGE:` | major — `x.0.0` |
 
-When commits are merged to `main`, `release-please` opens a Release PR. Merging that PR creates a GitHub Release and tag, which triggers `release.yml`.
+When commits are merged to `main`, `release-please` opens or updates a Release PR. Merging the Release PR creates a GitHub Release and the corresponding tag, which triggers the production CD job.
