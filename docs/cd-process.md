@@ -2,7 +2,7 @@
 
 ## Overview
 
-RecipeAI uses a **Blue-Green deployment strategy** on **Render.com**, with a separate staging environment acting as a mandatory QA gate. All deploys are orchestrated by GitHub Actions; Render's `autoDeploy` is disabled on every service. Traffic switching between production slots is controlled by a **Cloudflare Worker** reading a KV store key.
+RecipeAI uses a **Blue-Green deployment strategy** on **Render.com**, with a separate staging environment acting as a mandatory QA gate. All deploys are orchestrated by GitHub Actions; Render's `autoDeploy` is disabled on every service. Traffic switching between production slots is controlled by a **Cloudflare Worker** whose `ACTIVE_SLOT` environment variable determines which Render service receives traffic.
 
 ---
 
@@ -26,7 +26,7 @@ flowchart TD
     S_SMOKE -->|pass| S_OK[✅ Staging live]
     S_SMOKE -->|fail| S_RB[Auto-rollback via Render API]
 
-    P_SMOKE -->|pass| KV[Cloudflare Worker KV\nSwitch active slot]
+    P_SMOKE -->|pass| KV[Redeploy Cloudflare Worker\nACTIVE_SLOT = new slot]
     P_SMOKE -->|fail| P_RB[Auto-rollback via Render API]
 
     KV --> P_OK[✅ Production live]
@@ -152,9 +152,8 @@ The following secrets must be present in the repository for the CD pipeline to f
 | `RENDER_STAGING_SERVICE_ID` | Identifies the `recipeai-staging` service (`srv-…`) |
 | `RENDER_BLUE_SERVICE_ID` | Identifies the `recipeai-blue` service (`srv-…`) |
 | `RENDER_GREEN_SERVICE_ID` | Identifies the `recipeai-green` service (`srv-…`) |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account for KV writes |
-| `CLOUDFLARE_API_TOKEN` | Token with KV write permission |
-| `CLOUDFLARE_KV_NAMESPACE_ID` | KV namespace that the Worker reads for slot routing |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID |
+| `CLOUDFLARE_API_TOKEN` | Token with Workers Scripts edit permission |
 
 ---
 
