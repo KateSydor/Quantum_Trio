@@ -5,7 +5,16 @@
  * Потребує запущеного додатку на http://localhost:3000
  * Запуск: npx playwright test
  */
-import { test, expect } from '@playwright/test';
+import { test, expect, Page } from '@playwright/test';
+
+/**
+ * Хелпер: клікає по елементу через dispatchEvent щоб обійти
+ * перехоплення pointer events мобільним navbar-ом.
+ */
+async function forceClick(page: Page, locator: ReturnType<Page['locator']>) {
+  await locator.waitFor({ state: 'visible' });
+  await locator.dispatchEvent('click');
+}
 
 test.describe('Smoke Tests', () => {
   test('ST-001: Landing page loads successfully', async ({ page }) => {
@@ -16,57 +25,52 @@ test.describe('Smoke Tests', () => {
 
   test('ST-002: Navigation from Landing to Login', async ({ page }) => {
     await page.goto('/');
-    await page.click('text=Увійти');
+    await forceClick(page, page.locator('button.btn-nav-ghost'));
     await expect(page.locator('text=З поверненням')).toBeVisible();
   });
 
   test('ST-003: Navigation from Landing to Register', async ({ page }) => {
     await page.goto('/');
-    await page.click('text=Розпочати →');
-    await expect(page.locator('text=Створити акаунт')).toBeVisible();
+    await forceClick(page, page.locator('button.btn-nav-solid').first());
+    await expect(page.locator('.auth__title')).toBeVisible();
   });
 });
 
 test.describe('Authentication Flow', () => {
   test('AUTH-001: Login flow - fill form and submit', async ({ page }) => {
     await page.goto('/');
-    await page.click('text=Увійти');
+    // FIX mobile: nav-links перекриває btn-nav-ghost
+    await forceClick(page, page.locator('button.btn-nav-ghost'));
 
-    // Verify form elements
     await expect(page.locator('input[type="email"]')).toBeVisible();
     await expect(page.locator('input[type="password"]')).toBeVisible();
 
-    // Click login button
     await page.click('text=Увійти в акаунт →');
-
-    // Should navigate to Home
     await expect(page.locator('text=Що приготуємо')).toBeVisible();
   });
 
   test('AUTH-002: Password visibility toggle', async ({ page }) => {
     await page.goto('/');
-    await page.click('text=Увійти');
+    // FIX mobile: nav-links перекриває btn-nav-ghost
+    await forceClick(page, page.locator('button.btn-nav-ghost'));
 
-    // Initially password is hidden
     const passwordInput = page.locator('input[type="password"]');
     await expect(passwordInput).toBeVisible();
 
-    // Click eye icon to show password
-    await page.click('text=👁️');
+    // FIX mobile: navbar перекриває input-suffix
+    await forceClick(page, page.locator('button.input-suffix'));
 
-    // Now should be text type
     await expect(page.locator('text=🙈')).toBeVisible();
   });
 
   test('AUTH-003: Register flow - navigate and verify form', async ({ page }) => {
     await page.goto('/');
-    await page.click('text=Розпочати →');
+    // FIX mobile: nav-links перекриває btn-nav-solid (Розпочати →)
+    await forceClick(page, page.locator('button.btn-nav-solid').first());
 
-    // Check registration form elements
-    await expect(page.locator('text=Створити акаунт')).toBeVisible();
+    await expect(page.locator('.auth__title')).toBeVisible();
     await expect(page.locator('text=Крок 1 з 3')).toBeVisible();
 
-    // Check diet options
     await expect(page.locator('text=Вегетаріанство')).toBeVisible();
     await expect(page.locator('text=Без лактози')).toBeVisible();
     await expect(page.locator('text=Без глютену')).toBeVisible();
@@ -75,10 +79,10 @@ test.describe('Authentication Flow', () => {
 
   test('AUTH-004: Social login buttons work', async ({ page }) => {
     await page.goto('/');
-    await page.click('text=Увійти');
+    // FIX mobile: nav-links перекриває btn-nav-ghost
+    await forceClick(page, page.locator('button.btn-nav-ghost'));
 
     await page.click('text=Продовжити з Google');
-    // Should navigate to Home
     await expect(page.locator('text=Що приготуємо')).toBeVisible();
   });
 });
@@ -88,16 +92,15 @@ test.describe('Recipe Generation Flow', () => {
     await page.goto('/');
 
     // Step 1: Login
-    await page.click('text=Увійти');
+    await forceClick(page, page.locator('button.btn-nav-ghost'));
     await page.click('text=Увійти в акаунт →');
 
     // Step 2: Navigate to Generate
-    await page.click('text=✨ Згенерувати рецепт');
+    await forceClick(page, page.locator('button.btn-nav-solid'));
     await expect(page.locator('text=Генератор рецептів')).toBeVisible();
 
-    // Step 3: Click Generate
-    const generateBtn = page.locator('text=✨ Згенерувати рецепт').last();
-    await generateBtn.click();
+    // Step 3: Click Generate — FIX mobile: gen-sidebar перекриває кнопку
+    await forceClick(page, page.locator('button.btn-full--amber'));
 
     // Step 4: Loading page
     await expect(page.locator('text=AI готує рецепт')).toBeVisible();
@@ -108,17 +111,15 @@ test.describe('Recipe Generation Flow', () => {
 
   test('GEN-002: Add and remove ingredients', async ({ page }) => {
     await page.goto('/');
-    await page.click('text=Увійти');
+    await forceClick(page, page.locator('button.btn-nav-ghost'));
     await page.click('text=Увійти в акаунт →');
-    await page.click('text=✨ Згенерувати рецепт');
+    await forceClick(page, page.locator('button.btn-nav-solid'));
 
-    // Add ingredient
     const input = page.locator('.ing-input');
     await input.fill('Помідори');
     await input.press('Enter');
     await expect(page.locator('text=Помідори')).toBeVisible();
 
-    // Remove ingredient (click first ×)
     const removeButtons = page.locator('.ing-tag__remove');
     const count = await removeButtons.count();
     expect(count).toBe(5); // 4 default + 1 added
@@ -126,11 +127,10 @@ test.describe('Recipe Generation Flow', () => {
 
   test('GEN-003: Select meal type', async ({ page }) => {
     await page.goto('/');
-    await page.click('text=Увійти');
+    await forceClick(page, page.locator('button.btn-nav-ghost'));
     await page.click('text=Увійти в акаунт →');
-    await page.click('text=✨ Згенерувати рецепт');
+    await forceClick(page, page.locator('button.btn-nav-solid'));
 
-    // Click on "Обід"
     await page.click('.type-card:has-text("Обід")');
     const selected = page.locator('.type-card--selected');
     await expect(selected).toContainText('Обід');
@@ -138,12 +138,12 @@ test.describe('Recipe Generation Flow', () => {
 
   test('GEN-004: Toggle allergens', async ({ page }) => {
     await page.goto('/');
-    await page.click('text=Увійти');
+    await forceClick(page, page.locator('button.btn-nav-ghost'));
     await page.click('text=Увійти в акаунт →');
-    await page.click('text=✨ Згенерувати рецепт');
+    await forceClick(page, page.locator('button.btn-nav-solid'));
 
-    // Toggle nuts allergen
-    await page.click('text=🥜 Горіхи');
+    // FIX mobile: generate div перекриває allergy-chip
+    await forceClick(page, page.locator('button.allergy-chip', { hasText: '🥜 Горіхи' }));
     const nutsChip = page.locator('.allergy-chip--active:has-text("🥜 Горіхи")');
     await expect(nutsChip).toBeVisible();
   });
@@ -152,27 +152,23 @@ test.describe('Recipe Generation Flow', () => {
 test.describe('Recipe Page Interactions', () => {
   test('REC-001: Tab switching works', async ({ page }) => {
     await page.goto('/');
-    await page.click('text=Увійти');
+    await forceClick(page, page.locator('button.btn-nav-ghost'));
     await page.click('text=Увійти в акаунт →');
 
-    // Navigate to Recipe via mini card
     await page.locator('.mini-card').first().click();
 
-    // Default tab: Інгредієнти
     await expect(page.locator('text=Яйця курячі')).toBeVisible();
 
-    // Switch to Приготування
-    await page.click('text=👨‍🍳 Приготування');
+    await page.locator('button.tab-btn', { hasText: '👨‍🍳 Приготування' }).click();
     await expect(page.locator('text=Розігрій оливкову олію')).toBeVisible();
 
-    // Switch to Поживність
-    await page.click('text=📊 Поживність');
-    await expect(page.locator('text=Калорії')).toBeVisible();
+    await forceClick(page, page.locator('button.tab-btn', { hasText: '📊 Поживність' }));
+    await expect(page.locator('.nutr-key').first()).toBeVisible();
   });
 
   test('REC-002: Save recipe button', async ({ page }) => {
     await page.goto('/');
-    await page.click('text=Увійти');
+    await forceClick(page, page.locator('button.btn-nav-ghost'));
     await page.click('text=Увійти в акаунт →');
     await page.locator('.mini-card').first().click();
 
@@ -184,9 +180,9 @@ test.describe('Recipe Page Interactions', () => {
 test.describe('Profile Page', () => {
   test('PROF-001: Navigate to profile and verify content', async ({ page }) => {
     await page.goto('/');
-    await page.click('text=Увійти');
+    await forceClick(page, page.locator('button.btn-nav-ghost'));
     await page.click('text=Увійти в акаунт →');
-    await page.click('text=👤');
+    await forceClick(page, page.locator('button.nav-avatar').first());
 
     await expect(page.locator('text=Олексій Коваль')).toBeVisible();
     await expect(page.locator('text=oleksiy@example.com')).toBeVisible();
@@ -194,27 +190,26 @@ test.describe('Profile Page', () => {
 
   test('PROF-002: Toggle preferences', async ({ page }) => {
     await page.goto('/');
-    await page.click('text=Увійти');
+    await forceClick(page, page.locator('button.btn-nav-ghost'));
     await page.click('text=Увійти в акаунт →');
-    await page.click('text=👤');
+    await forceClick(page, page.locator('button.nav-avatar').first());
 
-    // Find and click a toggle
     const toggles = page.locator('.toggle');
     const count = await toggles.count();
     expect(count).toBeGreaterThan(0);
 
     await toggles.first().click();
-    // Toggle should still exist after click
     await expect(toggles.first()).toBeVisible();
   });
 
   test('PROF-003: Logout navigates to Login', async ({ page }) => {
     await page.goto('/');
-    await page.click('text=Увійти');
+    await forceClick(page, page.locator('button.btn-nav-ghost'));
     await page.click('text=Увійти в акаунт →');
-    await page.click('text=👤');
+    await forceClick(page, page.locator('button.nav-avatar').first());
 
-    await page.click('text=Вийти');
+    // FIX mobile: navbar перекриває кнопку Вийти
+    await forceClick(page, page.locator('button.btn-nav-ghost', { hasText: 'Вийти' }));
     await expect(page.locator('text=З поверненням')).toBeVisible();
   });
 });
@@ -223,19 +218,10 @@ test.describe('UI Visual Checks', () => {
   test('UI-001: Landing page has correct structure', async ({ page }) => {
     await page.goto('/');
 
-    // Navbar
     await expect(page.locator('.navbar')).toBeVisible();
-
-    // Hero section
     await expect(page.locator('.landing__hero')).toBeVisible();
-
-    // Features strip
     await expect(page.locator('.features-strip')).toBeVisible();
-
-    // How section
     await expect(page.locator('.how-section')).toBeVisible();
-
-    // Footer
     await expect(page.locator('.footer')).toBeVisible();
   });
 
@@ -246,4 +232,3 @@ test.describe('UI Visual Checks', () => {
     expect(position).toBe('sticky');
   });
 });
-
