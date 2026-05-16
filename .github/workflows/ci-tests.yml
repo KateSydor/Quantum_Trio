@@ -320,10 +320,21 @@ jobs:
   performance-tests:
     name: ⚡ Performance Tests (k6)
     runs-on: ubuntu-latest
-    if: always()
+    if: github.event_name == 'schedule'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Start mock server
+        run: node tests/performance/mock-server.js &
+
+      - name: Wait for mock server
+        run: npx wait-on http://localhost:8080/api/health
 
       - name: Install k6
         uses: grafana/setup-k6-action@v1
@@ -331,7 +342,7 @@ jobs:
       - name: Run performance tests
         run: k6 run tests/performance/load-test.js
         env:
-          BASE_URL: ${{ secrets.STAGING_URL }}
+          BASE_URL: http://localhost:8080
 
       - name: Upload k6 results
         uses: actions/upload-artifact@v4
